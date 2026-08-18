@@ -52,6 +52,12 @@ if exist "%BACKEND_DIR%\.venv\Scripts\python.exe" (
 )
 
 echo [BUILD] Using Python: %PYTHON%
+echo [BUILD] Installing backend dependencies...
+"%PYTHON%" -m pip install "%BACKEND_DIR%"
+if !errorlevel! neq 0 (
+    echo [WARN] Failed to install dependencies, PyInstaller might fail or produce a broken executable.
+)
+
 "%PYTHON%" "%BACKEND_DIR%\build_backend.py"
 if !errorlevel! neq 0 (
     echo [ERROR] Backend build failed!
