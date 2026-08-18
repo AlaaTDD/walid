@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import multiprocessing
 import sys
+from app.main import app
 
 
 def main() -> None:
@@ -20,11 +21,11 @@ def main() -> None:
     import uvicorn
 
     uvicorn.run(
-        "app.main:app",
+        app,
         host="127.0.0.1",
         port=8000,
-        log_level="warning",
-        access_log=False,
+        log_level="info",
+        workers=1,
     )
 
 
