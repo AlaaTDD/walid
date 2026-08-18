@@ -137,24 +137,25 @@ if defined ISCC (
     set "ISS_FILE=%RELEASE_DIR%\setup.iss"
     (
         echo [Setup]
-        echo AppName=Sheet Nesting App
+        echo AppName=walid
         echo AppVersion=1.0
-        echo DefaultDirName={autopf}\SheetNestingApp
-        echo DefaultGroupName=Sheet Nesting App
+        echo DefaultDirName={autopf}\walid
+        echo DefaultGroupName=walid
         echo OutputDir=%RELEASE_DIR%
-        echo OutputBaseFilename=SheetNestingApp-Setup
+        echo OutputBaseFilename=walid-Setup
         echo Compression=lzma2
         echo SolidCompression=yes
+        echo ChangesAssociations=yes
         echo.
         echo [Files]
         echo Source: "%BUNDLE_DIR%\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
         echo.
         echo [Icons]
-        echo Name: "{group}\Sheet Nesting App"; Filename: "{app}\sheet_nesting_app.exe"
-        echo Name: "{commondesktop}\Sheet Nesting App"; Filename: "{app}\sheet_nesting_app.exe"
+        echo Name: "{group}\walid"; Filename: "{app}\walid.exe"
+        echo Name: "{commondesktop}\walid"; Filename: "{app}\walid.exe"
         echo.
         echo [Run]
-        echo Filename: "{app}\sheet_nesting_app.exe"; Flags: nowait postinstall skipifsilent; Description: "Launch Sheet Nesting App"
+        echo Filename: "{app}\walid.exe"; Flags: nowait postinstall skipifsilent; Description: "Launch walid"
     ) > "!ISS_FILE!"
 
     "%ISCC%" "!ISS_FILE!"

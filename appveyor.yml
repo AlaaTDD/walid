@@ -16,5 +16,5 @@ build_script:
   - cmd: call build_release.bat
 
 artifacts:
-  - path: release\SheetNestingApp-Setup.exe
-    name: SheetNestingApp-Windows
+  - path: release\walid-Setup.exe
+    name: walid-Windows
