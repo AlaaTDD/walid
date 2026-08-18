@@ -1,0 +1,17 @@
+{
+  "process_id": "process-1787006892435-0d624fbe",
+  "name": "fallback_experiment_v2",
+  "command": ".venv/bin/python3 '/tmp/claude-surgical-scripts/mcp-script-1787006892430-db93b39f.sh'",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "pid": 5123,
+  "detached": true,
+  "status": "stopped",
+  "started_at": "2026-08-17T22:48:12.435Z",
+  "completed_at": "2026-08-17T22:55:40.824Z",
+  "exit_code": null,
+  "signal": "SIGTERM",
+  "output_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787006892435-0d624fbe.log",
+  "metadata_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787006892435-0d624fbe.json",
+  "error": null,
+  "logging_error": null
+}

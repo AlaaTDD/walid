@@ -1,0 +1,27 @@
+{
+  "command": "source .venv/bin/activate 2>/dev/null && python -m pytest tests/test_lns.py -v --tb=long -k \"deterministic or different_seeds or all_six\" 2>&1 | tail -60",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "purpose": "Confirm seeded reproducibility (spec section 14, hard requirement) still holds after replacing rng.choice with the adaptive selector's roulette-wheel pick, since both draw from the same rng instance but via different internal mechanisms.",
+  "expected_observation": "test_lns_is_deterministic_given_the_same_seed and test_lns_different_seeds_can_explore_differently both pass with the new AdaptiveOperatorSelector.select(rng) replacing rng.choice(operator_names), confirming determinism is preserved.",
+  "exit_code": 0,
+  "signal": null,
+  "status": "SUCCESS",
+  "timed_out": false,
+  "spawn_failed": false,
+  "output_truncated": false,
+  "attempts": [
+    {
+      "attempt": 1,
+      "exit_code": 0,
+      "signal": null,
+      "status": "SUCCESS",
+      "stdout": "============================= test session starts ==============================\nplatform darwin -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/alaassD/walid/backend/.venv/bin/python\ncachedir: .pytest_cache\nrootdir: /Volumes/alaassD/walid/backend\nconfigfile: pyproject.toml\nplugins: anyio-4.14.2\ncollecting ... collected 15 items / 12 deselected / 3 selected\n\ntests/test_lns.py::test_lns_is_deterministic_given_the_same_seed PASSED  [ 33%]\ntests/test_lns.py::test_lns_different_seeds_can_explore_differently PASSED [ 66%]\ntests/test_lns.py::test_all_six_destroy_operators_are_registered_and_reachable_by_lns PASSED [100%]\n\n====================== 3 passed, 12 deselected in 25.72s =======================\n",
+      "stderr": "",
+      "stdout_total_chars": 714,
+      "stderr_total_chars": 0,
+      "output_truncated": false,
+      "timed_out": false
+    }
+  ],
+  "elapsed_ms": 26099
+}

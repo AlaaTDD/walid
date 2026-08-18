@@ -1,0 +1,17 @@
+{
+  "process_id": "process-1787006122411-9afbccda",
+  "name": "grid_experiment",
+  "command": ".venv/bin/python3 '/tmp/claude-surgical-scripts/mcp-script-1787006122406-6dfa3f58.sh'",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "pid": 4978,
+  "detached": true,
+  "status": "stopped",
+  "started_at": "2026-08-17T22:35:22.411Z",
+  "completed_at": "2026-08-17T22:36:59.213Z",
+  "exit_code": null,
+  "signal": "SIGTERM",
+  "output_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787006122411-9afbccda.log",
+  "metadata_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787006122411-9afbccda.json",
+  "error": null,
+  "logging_error": null
+}

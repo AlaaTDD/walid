@@ -1,0 +1,17 @@
+{
+  "process_id": "process-1787028894943-47dfce27",
+  "name": "pytest_full_suite",
+  "command": "cd /Volumes/alaassD/walid/backend && .venv/bin/python3 -m pytest tests/ -v > /tmp/pytest_full_run.log 2>&1; echo \"EXIT_CODE=$?\" >> /tmp/pytest_full_run.log",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "pid": 10006,
+  "detached": true,
+  "status": "running",
+  "started_at": "2026-08-18T04:54:54.943Z",
+  "completed_at": null,
+  "exit_code": null,
+  "signal": null,
+  "output_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787028894943-47dfce27.log",
+  "metadata_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787028894943-47dfce27.json",
+  "error": null,
+  "logging_error": null
+}

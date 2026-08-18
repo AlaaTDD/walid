@@ -1,0 +1,17 @@
+{
+  "process_id": "process-1787007381194-559c1e68",
+  "name": "pocket_grid_experiment",
+  "command": ".venv/bin/python3 '/tmp/claude-surgical-scripts/mcp-script-1787007381140-e7e9e94b.sh'",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "pid": 5211,
+  "detached": true,
+  "status": "running",
+  "started_at": "2026-08-17T22:56:21.194Z",
+  "completed_at": null,
+  "exit_code": null,
+  "signal": null,
+  "output_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787007381194-559c1e68.log",
+  "metadata_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787007381194-559c1e68.json",
+  "error": null,
+  "logging_error": null
+}

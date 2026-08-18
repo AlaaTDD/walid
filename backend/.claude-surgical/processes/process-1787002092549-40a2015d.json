@@ -1,0 +1,17 @@
+{
+  "process_id": "process-1787002092549-40a2015d",
+  "name": "full_pipeline_probe",
+  "command": "/Volumes/alaassD/walid/backend/.venv/bin/python3 '/tmp/claude-surgical-scripts/mcp-bash-1787002092544-136e91c5.sh'",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "pid": 4171,
+  "detached": true,
+  "status": "stopped",
+  "started_at": "2026-08-17T21:28:12.549Z",
+  "completed_at": "2026-08-17T21:45:50.424Z",
+  "exit_code": null,
+  "signal": "SIGTERM",
+  "output_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787002092549-40a2015d.log",
+  "metadata_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787002092549-40a2015d.json",
+  "error": null,
+  "logging_error": null
+}

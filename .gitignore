@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/dist/
+backend/build/
+backend/*.spec
+
+# Flutter
+frontend/build/
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+
+# Release outputs
+release/
+backend/jobs/

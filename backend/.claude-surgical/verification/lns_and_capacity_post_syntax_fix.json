@@ -1,0 +1,27 @@
+{
+  "command": "source .venv/bin/activate 2>/dev/null && python -m pytest tests/test_lns.py tests/test_nesting_capacity.py -v --tb=short 2>&1 | tail -100",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "purpose": "Confirm the syntax fixes resolved the collection error and everything actually passes, not just parses.",
+  "expected_observation": "Every test in test_lns.py (including the 5 new adaptive selector tests) and test_nesting_capacity.py passes cleanly.",
+  "exit_code": 0,
+  "signal": null,
+  "status": "SUCCESS",
+  "timed_out": false,
+  "spawn_failed": false,
+  "output_truncated": false,
+  "attempts": [
+    {
+      "attempt": 1,
+      "exit_code": 0,
+      "signal": null,
+      "status": "SUCCESS",
+      "stdout": "============================= test session starts ==============================\nplatform darwin -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/alaassD/walid/backend/.venv/bin/python\ncachedir: .pytest_cache\nrootdir: /Volumes/alaassD/walid/backend\nconfigfile: pyproject.toml\nplugins: anyio-4.14.2\ncollecting ... collected 22 items\n\ntests/test_lns.py::test_lns_never_returns_fewer_placed_parts_than_starting_layout PASSED [  4%]\ntests/test_lns.py::test_lns_result_always_passes_independent_collision_validation PASSED [  9%]\ntests/test_lns.py::test_lns_rejects_invalid_max_iterations PASSED        [ 13%]\ntests/test_lns.py::test_lns_rejects_invalid_destroy_fraction PASSED      [ 18%]\ntests/test_lns.py::test_lns_is_deterministic_given_the_same_seed PASSED  [ 22%]\ntests/test_lns.py::test_lns_different_seeds_can_explore_differently PASSED [ 27%]\ntests/test_lns.py::test_destroy_random_removes_requested_fraction PASSED [ 31%]\ntests/test_lns.py::test_destroy_smallest_removes_the_smallest_area_parts PASSED [ 36%]\ntests/test_lns.py::test_destroy_neighborhood_removes_the_seeds_closest_geometric_neighbours PASSED [ 40%]\ntests/test_lns.py::test_destroy_neighborhood_single_part_removes_nothing_and_keeps_it PASSED [ 45%]\ntests/test_lns.py::test_destroy_similarity_removes_area_matched_parts_not_just_smallest PASSED [ 50%]\ntests/test_lns.py::test_destroy_cluster_removed_set_is_spatially_connected PASSED [ 54%]\ntests/test_lns.py::test_destroy_cluster_single_part_removes_nothing_and_keeps_it PASSED [ 59%]\ntests/test_lns.py::test_all_six_destroy_operators_are_registered_and_reachable_by_lns PASSED [ 63%]\ntests/test_lns.py::test_adaptive_selector_starts_with_equal_weights PASSED [ 68%]\ntests/test_lns.py::test_adaptive_selector_selection_is_weight_proportional PASSED [ 72%]\ntests/test_lns.py::test_adaptive_selector_rewards_new_best_more_than_merely_accepted PASSED [ 77%]\ntests/test_lns.py::test_adaptive_selector_weight_never_collapses_to_zero PASSED [ 81%]\ntests/test_lns.py::test_lns_result_exposes_final_operator_weights PASSED [ 86%]\ntests/test_lns.py::test_lns_can_improve_on_a_deliberately_awkward_greedy_layout PASSED [ 90%]\ntests/test_nesting_capacity.py::test_nesting_stops_when_no_remaining_shape_can_fit PASSED [ 95%]\ntests/test_nesting_capacity.py::test_lns_recovers_the_density_multiple_greedy_attempts_used_to_need PASSED [100%]\n\n======================== 22 passed in 141.36s (0:02:21) ========================\n",
+      "stderr": "",
+      "stdout_total_chars": 2438,
+      "stderr_total_chars": 0,
+      "output_truncated": false,
+      "timed_out": false
+    }
+  ],
+  "elapsed_ms": 141667
+}

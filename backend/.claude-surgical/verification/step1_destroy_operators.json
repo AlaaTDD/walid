@@ -1,0 +1,27 @@
+{
+  "command": ".venv/bin/python3 -c \"import app.nesting.lns\" && echo \"IMPORT_OK\" && .venv/bin/python3 -m pytest tests/test_lns.py -v --tb=short 2>&1 | tail -60",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "purpose": "\\u0627\\u0644\\u062a\\u062d\\u0642\\u0642 \\u0627\\u0644\\u0641\\u0648\\u0631\\u064a \\u0645\\u0646 \\u0635\\u062d\\u0629 syntax \\u0627\\u0644\\u0625\\u0636\\u0627\\u0641\\u0627\\u062a \\u0648\\u0639\\u062f\\u0645 \\u0643\\u0633\\u0631 \\u0627\\u0644\\u0627\\u062e\\u062a\\u0628\\u0627\\u0631\\u0627\\u062a \\u0627\\u0644\\u062d\\u0627\\u0644\\u064a\\u0629 \\u0642\\u0628\\u0644 \\u0627\\u0644\\u0627\\u0646\\u062a\\u0642\\u0627\\u0644 \\u0644\\u0644\\u062e\\u0637\\u0648\\u0629 \\u0627\\u0644\\u062a\\u0627\\u0644\\u064a\\u0629",
+  "expected_observation": "الملف يستورد بدون أخطاء syntax، والاختبارات الموجودة (اللي بتختبر operators القديمة و determinism) لسه بتنجح رغم إضافة operators جديدة",
+  "exit_code": 0,
+  "signal": null,
+  "status": "SUCCESS",
+  "timed_out": false,
+  "spawn_failed": false,
+  "output_truncated": false,
+  "attempts": [
+    {
+      "attempt": 1,
+      "exit_code": 0,
+      "signal": null,
+      "status": "SUCCESS",
+      "stdout": "IMPORT_OK\n============================= test session starts ==============================\nplatform darwin -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/alaassD/walid/backend/.venv/bin/python3\ncachedir: .pytest_cache\nrootdir: /Volumes/alaassD/walid/backend\nconfigfile: pyproject.toml\nplugins: anyio-4.14.2\ncollecting ... collected 9 items\n\ntests/test_lns.py::test_lns_never_returns_fewer_placed_parts_than_starting_layout PASSED [ 11%]\ntests/test_lns.py::test_lns_result_always_passes_independent_collision_validation PASSED [ 22%]\ntests/test_lns.py::test_lns_rejects_invalid_max_iterations PASSED        [ 33%]\ntests/test_lns.py::test_lns_rejects_invalid_destroy_fraction PASSED      [ 44%]\ntests/test_lns.py::test_lns_is_deterministic_given_the_same_seed PASSED  [ 55%]\ntests/test_lns.py::test_lns_different_seeds_can_explore_differently PASSED [ 66%]\ntests/test_lns.py::test_destroy_random_removes_requested_fraction PASSED [ 77%]\ntests/test_lns.py::test_destroy_smallest_removes_the_smallest_area_parts PASSED [ 88%]\ntests/test_lns.py::test_lns_can_improve_on_a_deliberately_awkward_greedy_layout PASSED [100%]\n\n======================== 9 passed in 101.83s (0:01:41) =========================\n",
+      "stderr": "",
+      "stdout_total_chars": 1208,
+      "stderr_total_chars": 0,
+      "output_truncated": false,
+      "timed_out": false
+    }
+  ],
+  "elapsed_ms": 102319
+}

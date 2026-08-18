@@ -1,0 +1,27 @@
+{
+  "command": "source .venv/bin/activate 2>/dev/null && python -m pytest tests/test_nesting_capacity.py tests/test_lns.py -v --tb=short 2>&1 | tail -100",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "purpose": "Confirm the rewritten test file and the fast-path routing fix together produce a clean pass on both the capacity tests and the full LNS suite before moving to the wider regression run.",
+  "expected_observation": "Both rewritten/fixed capacity tests pass, and the entire LNS test suite (which exercises _should_use_fast_candidate_path indirectly on every fixture) still passes after the fast-path routing fix.",
+  "exit_code": 0,
+  "signal": null,
+  "status": "SUCCESS",
+  "timed_out": false,
+  "spawn_failed": false,
+  "output_truncated": false,
+  "attempts": [
+    {
+      "attempt": 1,
+      "exit_code": 0,
+      "signal": null,
+      "status": "SUCCESS",
+      "stdout": "============================= test session starts ==============================\nplatform darwin -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/alaassD/walid/backend/.venv/bin/python\ncachedir: .pytest_cache\nrootdir: /Volumes/alaassD/walid/backend\nconfigfile: pyproject.toml\nplugins: anyio-4.14.2\ncollecting ... collected 17 items\n\ntests/test_nesting_capacity.py::test_nesting_stops_when_no_remaining_shape_can_fit PASSED [  5%]\ntests/test_nesting_capacity.py::test_lns_recovers_the_density_multiple_greedy_attempts_used_to_need PASSED [ 11%]\ntests/test_lns.py::test_lns_never_returns_fewer_placed_parts_than_starting_layout PASSED [ 17%]\ntests/test_lns.py::test_lns_result_always_passes_independent_collision_validation PASSED [ 23%]\ntests/test_lns.py::test_lns_rejects_invalid_max_iterations PASSED        [ 29%]\ntests/test_lns.py::test_lns_rejects_invalid_destroy_fraction PASSED      [ 35%]\ntests/test_lns.py::test_lns_is_deterministic_given_the_same_seed PASSED  [ 41%]\ntests/test_lns.py::test_lns_different_seeds_can_explore_differently PASSED [ 47%]\ntests/test_lns.py::test_destroy_random_removes_requested_fraction PASSED [ 52%]\ntests/test_lns.py::test_destroy_smallest_removes_the_smallest_area_parts PASSED [ 58%]\ntests/test_lns.py::test_destroy_neighborhood_removes_the_seeds_closest_geometric_neighbours PASSED [ 64%]\ntests/test_lns.py::test_destroy_neighborhood_single_part_removes_nothing_and_keeps_it PASSED [ 70%]\ntests/test_lns.py::test_destroy_similarity_removes_area_matched_parts_not_just_smallest PASSED [ 76%]\ntests/test_lns.py::test_destroy_cluster_removed_set_is_spatially_connected PASSED [ 82%]\ntests/test_lns.py::test_destroy_cluster_single_part_removes_nothing_and_keeps_it PASSED [ 88%]\ntests/test_lns.py::test_all_six_destroy_operators_are_registered_and_reachable_by_lns PASSED [ 94%]\ntests/test_lns.py::test_lns_can_improve_on_a_deliberately_awkward_greedy_layout PASSED [100%]\n\n======================== 17 passed in 135.08s (0:02:15) ========================\n",
+      "stderr": "",
+      "stdout_total_chars": 2001,
+      "stderr_total_chars": 0,
+      "output_truncated": false,
+      "timed_out": false
+    }
+  ],
+  "elapsed_ms": 135470
+}

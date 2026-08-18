@@ -1,0 +1,27 @@
+{
+  "command": "source .venv/bin/activate 2>/dev/null && python -m pytest tests/test_lns.py -v --tb=long -k \"adaptive\" 2>&1 | tail -40",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "purpose": "Verify the new AdaptiveOperatorSelector's own dedicated tests pass, proving the mechanism does what its docstrings and spec-section-12 justification claim.",
+  "expected_observation": "All 5 new adaptive selector tests pass, confirming the mechanism's weight-proportionality, reward ordering, weight floor, and result exposure all work as designed.",
+  "exit_code": 0,
+  "signal": null,
+  "status": "SUCCESS",
+  "timed_out": false,
+  "spawn_failed": false,
+  "output_truncated": false,
+  "attempts": [
+    {
+      "attempt": 1,
+      "exit_code": 0,
+      "signal": null,
+      "status": "SUCCESS",
+      "stdout": "platform darwin -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0 -- /Volumes/alaassD/walid/backend/.venv/bin/python\ncachedir: .pytest_cache\nrootdir: /Volumes/alaassD/walid/backend\nconfigfile: pyproject.toml\nplugins: anyio-4.14.2\ncollecting ... collected 0 items / 1 error\n\n==================================== ERRORS ====================================\n______________________ ERROR collecting tests/test_lns.py ______________________\n.venv/lib/python3.14/site-packages/_pytest/python.py:508: in importtestmodule\n    mod = import_path(\n.venv/lib/python3.14/site-packages/_pytest/pathlib.py:596: in import_path\n    importlib.import_module(module_name)\n/Users/alaataha/.homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n<frozen importlib._bootstrap>:1406: in _gcd_import\n    ???\n<frozen importlib._bootstrap>:1371: in _find_and_load\n    ???\n<frozen importlib._bootstrap>:1342: in _find_and_load_unlocked\n    ???\n<frozen importlib._bootstrap>:938: in _load_unlocked\n    ???\n.venv/lib/python3.14/site-packages/_pytest/assertion/rewrite.py:179: in exec_module\n    source_stat, co = _rewrite_test(fn, self.config)\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n.venv/lib/python3.14/site-packages/_pytest/assertion/rewrite.py:348: in _rewrite_test\n    tree = ast.parse(source, filename=strfn)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n/Users/alaataha/.homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/ast.py:46: in parse\n    return compile(source, filename, mode, flags,\nE     File \"/Volumes/alaassD/walid/backend/tests/test_lns.py\", line 402\nE       def _p(part_id, shape):def _p(part_id, shape):\nE                              ^^^\nE   SyntaxError: invalid syntax\n=========================== short test summary info ============================\nERROR tests/test_lns.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.15s ===============================\n",
+      "stderr": "",
+      "stdout_total_chars": 2186,
+      "stderr_total_chars": 0,
+      "output_truncated": false,
+      "timed_out": false
+    }
+  ],
+  "elapsed_ms": 432
+}

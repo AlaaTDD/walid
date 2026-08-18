@@ -1,0 +1,17 @@
+{
+  "process_id": "process-1786998358880-78d83113",
+  "name": "walid-pytest-all-noexit",
+  "command": "/Volumes/alaassD/walid/backend/.venv/bin/python3 -m pytest tests/ -q --tb=line 2>&1 | tee /tmp/walid_pytest_all_run.log",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "pid": 2215,
+  "detached": true,
+  "status": "completed",
+  "started_at": "2026-08-17T20:25:58.880Z",
+  "completed_at": "2026-08-17T20:28:46.858Z",
+  "exit_code": 0,
+  "signal": null,
+  "output_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1786998358880-78d83113.log",
+  "metadata_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1786998358880-78d83113.json",
+  "error": null,
+  "logging_error": null
+}

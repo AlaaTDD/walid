@@ -1,0 +1,17 @@
+{
+  "process_id": "process-1787006274151-d8cd135d",
+  "name": "v2_experiment",
+  "command": ".venv/bin/python3 '/tmp/claude-surgical-scripts/mcp-script-1787006274146-491b6e56.sh'",
+  "cwd": "/Volumes/alaassD/walid/backend",
+  "pid": 5008,
+  "detached": true,
+  "status": "stopped",
+  "started_at": "2026-08-17T22:37:54.151Z",
+  "completed_at": "2026-08-17T22:40:23.537Z",
+  "exit_code": null,
+  "signal": "SIGTERM",
+  "output_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787006274151-d8cd135d.log",
+  "metadata_path": "/Volumes/alaassD/walid/backend/.claude-surgical/processes/process-1787006274151-d8cd135d.json",
+  "error": null,
+  "logging_error": null
+}

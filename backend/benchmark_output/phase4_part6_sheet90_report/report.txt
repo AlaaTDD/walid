@@ -1,0 +1,29 @@
+=== Phase 4 Statistical Benchmark (part_count=6, sheet=90.0x90.0mm, N_valid=25, N_tried=27, excluded=2) ===
+Total elapsed: 234.3s
+
+Baseline utilization  : best=0.6826 worst=0.3212 mean=0.5074 median=0.5025 stdev=0.0932
+Pipeline utilization  : best=0.6826 worst=0.3212 mean=0.5074 median=0.5025 stdev=0.0932
+Utilization delta     : best=+0.0000 worst=-0.0000 mean=+0.0000 median=+0.0000 stdev=0.0000
+
+Baseline placed count : best=6 worst=5 mean=5.96 median=6
+Pipeline placed count : best=6 worst=5 mean=5.96 median=6
+Placed count delta    : best=0 worst=0 mean=0.00 median=0
+
+Baseline objective score : mean=5986.67 median=6024.64
+Pipeline objective score : mean=5998.81 median=6038.87
+
+Seeds where pipeline placed MORE parts than baseline: 0/25
+Seeds where pipeline placed the SAME number of parts: 25/25
+Seeds where pipeline placed FEWER parts than baseline: 0/25
+
+NOTE: This module's own defaults (part_count=40, sheet=300x300mm) were found impractical for this
+evidentiary run. part_count=40 fails independent validation on ~100% of seeds due to a known,
+pre-existing GEOS TopologyException on the exact-NFP triangulation path at that scale. part_count=6
+at the module's default 300x300mm sheet was tried next but was too under-constrained: baseline placed
+all 6 parts on every seed at only 2.8-6.6% utilization, leaving the LNS+compaction pipeline nothing to
+improve (zero delta on all 25 seeds tried). part_count=6 at a smaller 90.0x90.0mm sheet was
+selected after direct probing found it produces genuine baseline placement variance (some seeds place
+all parts, others leave one out) while keeping the GEOS exclusion rate low enough to be workable.
+This does not claim optimality; it reports MEASURED utilization/placed-count for baseline vs.
+LNS+compaction pipeline on 25 real seeded runs at this corrected, smaller scale.
+Excluded seeds (known GEOS limitation, not a real overlap): [7, 15]

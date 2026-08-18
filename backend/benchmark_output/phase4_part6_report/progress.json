@@ -1,0 +1,18 @@
+{
+  "seeds_tried": 27,
+  "valid_results": 25,
+  "excluded_count": 2,
+  "excluded_seeds": [
+    {
+      "seed": 4,
+      "reason": "GEOSException during LNS/compaction: TopologyException: side location conflict at -16.129590997225129 7.235107062203495. This can occur if the input geometry is invalid."
+    },
+    {
+      "seed": 15,
+      "reason": "GEOSException during baseline placement: TopologyException: side location conflict at -22.070529933792741 16.167058334070092. This can occur if the input geometry is invalid."
+    }
+  ],
+  "target": 25,
+  "done": true,
+  "timestamp": 1786860286.765402
+}
