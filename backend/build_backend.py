@@ -50,9 +50,8 @@ def main() -> int:
 
     if result.returncode == 0:
         dist_path = backend_dir / "dist" / "nesting_server"
-        print(f"\n✅ Build succeeded! Output: {dist_path}")
-    else:
-        print(f"\n❌ Build failed with code {result.returncode}", file=sys.stderr)
+        print(f"\n[OK] Build succeeded! Output: {dist_path}")
+        print(f"\n[ERROR] Build failed with code {result.returncode}", file=sys.stderr)
 
     return result.returncode
 
