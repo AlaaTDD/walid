@@ -1,0 +1,20 @@
+version: 1.0.{build}
+image: Visual Studio 2022
+build: off
+
+install:
+  # Set Python 3.10 path (AppVeyor pre-installs this)
+  - set PATH=C:\Python310-x64;C:\Python310-x64\Scripts;%PATH%
+  - python --version
+  
+  # Install Flutter
+  - git clone https://github.com/flutter/flutter.git -b stable C:\flutter
+  - set PATH=C:\flutter\bin;%PATH%
+  - flutter doctor
+
+build_script:
+  - cmd: call build_release.bat
+
+artifacts:
+  - path: release\SheetNestingApp-Setup.exe
+    name: SheetNestingApp-Windows
