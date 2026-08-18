@@ -7,9 +7,9 @@ install:
   - set PATH=C:\Python310-x64;C:\Python310-x64\Scripts;%PATH%
   - python --version
   
-  # Install Flutter
-  - git clone https://github.com/flutter/flutter.git -b stable C:\flutter
-  - set PATH=C:\flutter\bin;%PATH%
+  # Install Flutter to a unique path
+  - git clone https://github.com/flutter/flutter.git -b stable C:\flutter-sdk
+  - set PATH=C:\flutter-sdk\bin;%PATH%
   - flutter doctor
 
 build_script:
