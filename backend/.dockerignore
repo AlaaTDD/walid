@@ -1,0 +1,18 @@
+# Never bake local development artifacts, secrets, or per-run job data into
+# the image -- jobs/ in particular can be large and is regenerated at runtime
+# on the container's own persistent disk (or ephemeral disk, per NESTING_JOBS_ROOT).
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
+jobs/
+benchmark_output/
+backups/
+*.log
+.pytest_cache/
+.git/
+.gitignore
+README*.md
