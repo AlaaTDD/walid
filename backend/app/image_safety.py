@@ -10,19 +10,40 @@ from PIL import Image
 
 
 def _configured_input_pixel_limit() -> int | None:
-    """Return an optional Pillow pixel limit.
+    """Return the Pillow pixel limit applied to untrusted uploaded images.
 
-    Desktop production jobs can legitimately contain very large print files.
-    There is intentionally no hidden default pixel cap; operators that need a
-    defensive limit can opt in with ``NESTING_MAX_IMAGE_PIXELS``.
+    Security review finding: a small PNG (a few MB on disk) whose header
+    declares an enormous pixel grid can decode to gigabytes in memory --
+    measured directly: a 3.4MB solid-colour PNG at 30000x30000px decodes to
+    ~3.4GB as RGBA, well under MAX_UPLOAD_BYTES' 1GiB file-size cap, which
+    checks bytes on disk and has no visibility into decoded size at all.
+    Multiple such uploads analysed concurrently (MAX_PARALLEL_IMAGE_ANALYSES)
+    can exhaust available memory well before any file-size limit is reached.
+
+    Desktop production jobs can legitimately contain very large print files
+    (a 300 DPI A0 poster is already ~138 million pixels), so the default here
+    is deliberately generous rather than Pillow's own stock ~89 million-pixel
+    default -- 500 million pixels comfortably covers realistic large-format
+    print sizes while still bounding the decode-memory amplification factor
+    to roughly 500x instead of unlimited. An operator who genuinely needs a
+    single image larger than this can still raise or disable the limit
+    explicitly via NESTING_MAX_IMAGE_PIXELS (0 or a blank value disables it
+    entirely, matching the previous default), so this changes only the
+    out-of-the-box posture for a fresh install, not what the tool is capable
+    of handling when an operator opts into a larger/unlimited value.
     """
     configured = os.getenv("NESTING_MAX_IMAGE_PIXELS")
-    if configured is None or not configured.strip() or configured.strip() == "0":
+    if configured is not None and configured.strip() == "0":
         return None
+    if configured is None or not configured.strip():
+        return _DEFAULT_MAX_INPUT_IMAGE_PIXELS
     try:
         return max(1, int(configured))
     except ValueError:
-        return None
+        return _DEFAULT_MAX_INPUT_IMAGE_PIXELS
+
+
+_DEFAULT_MAX_INPUT_IMAGE_PIXELS = 500_000_000
 
 
 MAX_INPUT_IMAGE_PIXELS = _configured_input_pixel_limit()

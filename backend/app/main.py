@@ -34,6 +34,7 @@ from app.api.job_storage import (
 from app.api.processed_images import ProcessedImagesError, move_processed_originals
 from app.api.schemas import (
     ComputeRequest,
+    ContourPointPreview,
     CreateJobResponse,
     JobStatusResponse,
     JobPartStatus,
@@ -52,7 +53,7 @@ from app.core_logging import get_logger
 from app.geometry.contour import ContourExtractionError, extract_contour_from_image
 from app.geometry.units import Resolution
 from app.image_safety import MAX_INPUT_IMAGE_PIXELS, open_image_with_limit
-from app.nesting.collision import validate_layout
+from app.nesting.collision import CollisionReport, ValidationViolation, validate_layout
 from app.nesting.compaction import compact_layout
 from app.nesting.engine import NestingCancelledError, run_best_single_sheet_nesting
 from app.nesting.lns import run_lns_optimization, run_local_reoptimization
@@ -117,9 +118,27 @@ app = FastAPI(
     version="1.0.0",
     lifespan=_lifespan,
 )
+# Security review finding: this backend is designed to run locally with no
+# authentication on any endpoint (upload, compute, confirm/export, delete --
+# see README.md and run_server.py's own "Images stay on this device" banner).
+# allow_origins=["*"] previously meant ANY website open in ANY browser tab on
+# this machine could script a cross-origin fetch() to this server -- list job
+# data, upload attacker-chosen images into an existing job, or trigger an
+# export that writes files via processed_images_path -- entirely without the
+# user's knowledge, since a wildcard CORS policy lets the browser both send
+# the request AND read the response regardless of which page initiated it.
+# The frontend only ever talks to a fixed local origin (localhost/127.0.0.1,
+# any port -- see web/src/lib/nestingApi.ts's own "browser -> loopback ->
+# Python" comment and its LOCAL_BACKEND_URL default), so restricting to that
+# origin family costs the app nothing while closing this cross-origin path.
+# The regex intentionally allows any port (the desktop frontend's dev/prod
+# port can vary) but only the loopback hostnames themselves -- not "*" and
+# not a broader private-network range, since this app has no legitimate
+# reason to be called from a different device's browser.
+ALLOWED_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -371,6 +390,34 @@ def _job_status_payload(state) -> CreateJobResponse:
     )
 
 
+def _exterior_ring_mm(placed_shape_mm) -> list[ContourPointPreview]:
+    """Exact exterior ring of a placed part's real (possibly irregular) shape.
+
+    placed_shape_mm is normally a single Polygon, but PartInput.shape_mm (and
+    therefore placed_shape_mm after rotation/translation) can in principle be
+    a MultiPolygon if contour extraction's unary_union ever merges disjoint
+    alpha regions (see geometry/contour.py). There is no single exterior ring
+    for disjoint pieces, and the frontend canvas only ever draws one closed
+    path per part id, so the largest-area piece is used by convention -- the
+    same defensive MultiPolygon handling already used elsewhere in this
+    codebase (see nesting/benchmark.py's _draw_layout). This never raises for
+    a normal single-Polygon part, which is the overwhelming common case.
+    """
+    geom = placed_shape_mm
+    if geom.geom_type == "MultiPolygon":
+        polygons = [g for g in geom.geoms if g.geom_type == "Polygon" and g.area > 0]
+        if not polygons:
+            return []
+        geom = max(polygons, key=lambda g: g.area)
+    if geom.geom_type != "Polygon":
+        return []
+    # [:-1] drops the exterior ring's closing point (Shapely repeats the
+    # first coordinate at the end), matching how the frontend already treats
+    # contourMm as an implicitly-closed path (SheetLayoutCanvas.tsx calls
+    # path.closePath() itself after the last point).
+    return [ContourPointPreview(x_mm=x, y_mm=y) for x, y in list(geom.exterior.coords)[:-1]]
+
+
 def _placed_previews(placed_parts):
     previews = []
     for part in placed_parts:
@@ -386,6 +433,7 @@ def _placed_previews(placed_parts):
                 bounds_max_y_mm=bounds[3],
                 centroid_x_mm=centroid.x,
                 centroid_y_mm=centroid.y,
+                contour_mm=_exterior_ring_mm(part.placed_shape_mm),
             )
         )
     return previews
@@ -435,8 +483,76 @@ def _sheet_preview(page_number: int, placed, collision_report) -> SheetPreview:
     )
 
 
+def _reports_from_cached_violations(state, placed_sheets):
+    """Split the flat, cross-sheet cached_collision_violations back into one
+    CollisionReport per sheet, keyed by which sheet each violation's part(s)
+    actually belong to.
+
+    state.cached_collision_violations is stored as a single flattened list
+    across every sheet (see the write site in compute_layout, which builds it
+    from ``for report in collision_reports for v in report.violations``), but
+    _stored_compute_response needs one CollisionReport per sheet -- the same
+    per-sheet shape validate_layout() itself returns. A violation's part_id_a
+    is always present and sufficient to identify its sheet (validate_layout is
+    called once per sheet, so both parts in a pairwise violation are
+    necessarily on the same sheet as part_id_a); part_id_b is None for
+    single-part violations (OUT_OF_BOUNDS).
+
+    checked_pairs_count is not reconstructed per-sheet from the cache (only
+    the aggregate total is stored, in cached_collision_checked_pairs) -- it is
+    purely a diagnostic/logging figure, never used to gate acceptance
+    (is_valid depends only on ``violations``), so leaving it at 0 for a cache
+    hit changes no accepted/rejected outcome for any layout.
+    """
+    sheet_owner_by_part_id: dict[str, int] = {}
+    for sheet_index, placed in enumerate(placed_sheets):
+        for part in placed:
+            sheet_owner_by_part_id[part.part_id] = sheet_index
+
+    violations_by_sheet: list[list[ValidationViolation]] = [[] for _ in placed_sheets]
+    for cached in state.cached_collision_violations:
+        owner_index = sheet_owner_by_part_id.get(cached["part_id_a"])
+        if owner_index is None:
+            # A cached violation referencing a part_id no longer present on any
+            # current sheet means the layout changed since the cache was
+            # written -- exactly what _collision_signature exists to detect.
+            # Structurally unreachable when the signature check above already
+            # matched, but this is the safe, explicit fallback rather than a
+            # silent KeyError or a dropped violation.
+            return None
+        violations_by_sheet[owner_index].append(
+            ValidationViolation(
+                severity=cached["severity"],
+                part_id_a=cached["part_id_a"],
+                part_id_b=cached["part_id_b"],
+                detail=cached["detail"],
+                measured_distance_mm=cached["measured_distance_mm"],
+            )
+        )
+    return [
+        CollisionReport(violations=violations_by_sheet[index], checked_pairs_count=0)
+        for index in range(len(placed_sheets))
+    ]
+
+
 def _validate_stored_sheets(state):
     placed_sheets = sheets_from_state(state)
+
+    # cached_collision_signature/is_valid/violations/checked_pairs are written
+    # in compute_layout after every successful compute (see that write site),
+    # documented there and in job_storage.py's own JobState field comment as
+    # existing specifically so GET /jobs/{id} -- which calls this function on
+    # every poll while stage is "computed"/"confirmed" -- does not need to
+    # re-run the full O(n log n) STRtree query plus exact GEOS predicates for
+    # every candidate pair on every single poll. That comparison was
+    # previously never actually performed here: the cache was written but
+    # never read, so validate_layout() ran unconditionally regardless of
+    # whether the layout had changed since the last compute.
+    if state.cached_collision_signature is not None and state.cached_collision_signature == _collision_signature(state):
+        cached_reports = _reports_from_cached_violations(state, placed_sheets)
+        if cached_reports is not None:
+            return placed_sheets, cached_reports
+
     reports = [
         validate_layout(
             placed,
@@ -793,6 +909,26 @@ async def delete_job_part(job_id: str, client_part_id: str) -> dict[str, object]
         state.processed_images_directory = None
         state.moved_processed_images_count = 0
         state.qa_violations = []
+        # Found during full-project review: this reset previously missed the
+        # four cached_collision_* fields that _upgrade_legacy_alpha_rejections
+        # (a few dozen lines above) already correctly clears on the same kind
+        # of structural change. Not exploitable today -- _validate_stored_sheets
+        # (the only reader of these fields) is only ever invoked by
+        # _stored_compute_response, which is only ever called when
+        # state.stage is "computed"/"confirmed" (see get_nesting_job's own
+        # guard), and this deletion always resets stage to "uploaded" first --
+        # so the stale cache is unreachable dead data until the next
+        # compute_layout() call unconditionally overwrites it anyway. Clearing
+        # it here regardless keeps every structural-change reset site
+        # consistent and removes the latent trap for any future code path
+        # that might call _validate_stored_sheets without first checking
+        # state.stage, matching this project's existing defense-in-depth style
+        # (e.g. _reports_from_cached_violations' own "should be structurally
+        # unreachable... but checked rather than assumed" fallback).
+        state.cached_collision_signature = None
+        state.cached_collision_is_valid = None
+        state.cached_collision_violations = []
+        state.cached_collision_checked_pairs = 0
         save_job_state(state)
 
     return {"deleted": True, "job_id": job_id, "remaining_count": len(state.parts)}
@@ -813,7 +949,17 @@ async def delete_nesting_job(job_id: str) -> dict[str, object]:
         import shutil
         shutil.rmtree(job_dir, ignore_errors=True)
         _finish_progress(job_id, "تم حذف عملية الترتيب.")
-    _job_locks.pop(job_id, None)
+    # _job_lock_guard (not the per-job `lock` just released above) is the
+    # correct mutex here: it is the SAME guard _get_job_lock() itself uses to
+    # create/look up entries in _job_locks. Popping the dict entry without it
+    # was a bare, unguarded mutation racing directly against any concurrent
+    # _get_job_lock(job_id) call for a job recreated under the same id right
+    # after deletion — one coroutine could observe a half-updated dict while
+    # another was mid-`setdefault`. Holding _job_lock_guard around the pop
+    # makes this dict mutation atomic with every other dict mutation
+    # _get_job_lock() performs, closing that window.
+    async with _job_lock_guard:
+        _job_locks.pop(job_id, None)
     return {"deleted": True, "job_id": job_id, "previous_stage": state.stage}
 
 
@@ -835,45 +981,36 @@ async def compute_layout(job_id: str, req: ComputeRequest) -> ComputeResponse:
                 "ارفع الصور بنفس DPI المطلوب."
             ),
         )
-
-    part_inputs = part_inputs_from_state(state)
-    if not part_inputs:
-        raise HTTPException(status_code=400, detail="لا يوجد أي صور مقبولة لحساب الترتيب.")
-
-    requested_settings = (
-        req.sheet_width_mm,
-        req.sheet_height_mm,
-        req.sheet_margin_mm,
-        req.clearance_mm,
-        req.dpi,
-        req.packing_attempts,
-    )
-    stored_settings = (
-        state.sheet_width_mm,
-        state.sheet_height_mm,
-        state.sheet_margin_mm,
-        state.clearance_mm,
-        state.dpi,
-        state.packing_attempts,
-    )
-    # Upgrade a layout written before the page collection was introduced;
-    # it may have been made by the former multi-page workflow.
-    is_legacy_partial_layout = not state.multi_sheet_layout
-    if (
-        not is_legacy_partial_layout
-        and state.stage in ("computed", "confirmed")
-        and all(value is not None for value in stored_settings)
-        and all(
-            abs(float(a) - float(b)) < 1e-9
-            for a, b in zip(requested_settings, stored_settings, strict=True)
-        )
-    ):
-        cached = _stored_compute_response(state)
-        if cached is not None:
-            return cached
+    # part_inputs was previously computed here, BEFORE the per-job lock below
+    # is acquired, from this same pre-lock `state` snapshot -- and never
+    # refreshed afterward. /upload and /delete each take that same lock to
+    # mutate state.parts, but only for the duration of their own write; they
+    # do not block a compute_layout call that already read `state` before
+    # they ran. A part uploaded or deleted in the window between this read
+    # and the lock acquisition below was silently invisible to the entire
+    # nesting run that followed, while the job's `state` on disk (which
+    # /upload or /delete had already committed) reflected the newer part
+    # set -- the saved result at the end of this function would then not
+    # match what was actually uploaded. The DPI check and cached-response
+    # fast path immediately above are read-only and safe to keep unlocked
+    # (a cache hit here never mutates anything and returning early is
+    # correct even against a slightly stale snapshot -- worst case is one
+    # extra full recompute), but the actual computation below needs the
+    # freshest possible part set once it is committed to running.
 
     lock = await _get_job_lock(job_id)
     async with lock:
+        # Re-read state now, from inside the lock, so any /upload or /delete
+        # that completed (and released the same lock) between the pre-lock
+        # checks above and this line is fully reflected before part_inputs is
+        # derived from it. This mirrors the same defensive re-read pattern
+        # every other locked mutation in this file already performs by
+        # working from `state` captured at, or after, lock acquisition.
+        state = load_job_state(job_id)
+        part_inputs = part_inputs_from_state(state)
+        if not part_inputs:
+            raise HTTPException(status_code=400, detail="لا يوجد أي صور مقبولة لحساب الترتيب.")
+
         _cancelled_jobs.discard(job_id)
         _set_progress(job_id, (0, len(part_inputs), 0, "في انتظار موارد الحساب المتاحة..."))
 
@@ -1239,6 +1376,24 @@ async def compute_layout(job_id: str, req: ComputeRequest) -> ComputeResponse:
 
 @app.post("/layout/cancel/{job_id}")
 async def cancel_layout(job_id: str) -> dict[str, str]:
+    # Every other job-scoped endpoint validates the job exists via
+    # load_job_state before acting; this one silently accepted a cancel for a
+    # completely unknown job_id. Deliberately NOT taking the per-job lock
+    # here: compute_layout holds that lock for its entire (potentially
+    # multi-minute) run, so cancel_layout must stay lock-free to actually be
+    # able to interrupt a compute in progress — acquiring the same lock would
+    # make every cancel request queue behind the very computation it is
+    # trying to stop, defeating cancellation entirely. set.add() on
+    # _cancelled_jobs is a single atomic operation under the GIL and
+    # compute_layout's own cancelled() check already treats this set as a
+    # best-effort, eventually-consistent signal (polled, not locked), so no
+    # lock is needed for the mutation itself — only the existence check was
+    # actually missing.
+    try:
+        load_job_state(job_id)
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     _cancelled_jobs.add(job_id)
     done, total, placed, _message = _progress_jobs.get(job_id, (0, 0, 0, None))
     _set_progress(job_id, (done, total, placed, "جاري إيقاف الحساب..."))
@@ -1339,152 +1494,190 @@ async def confirm_and_export(job_id: str, req: ConfirmRequest) -> ConfirmRespons
             processed_images_directory=state.processed_images_directory,
             moved_processed_images_count=int(state.moved_processed_images_count or 0),
         )
-    if state.stage != "computed":
-        raise HTTPException(status_code=400, detail="لازم تعمل compute قبل confirm.")
-    placed_sheets = sheets_from_state(state)
-    if not placed_sheets or not any(placed_sheets):
-        raise HTTPException(status_code=400, detail="لا توجد قطع مرتبة للتصدير.")
 
-    values = (state.sheet_width_mm, state.sheet_height_mm, state.sheet_margin_mm, state.clearance_mm, state.dpi)
-    if any(value is None for value in values):
-        raise HTTPException(status_code=500, detail="حالة الـjob ناقصة.")
-    sheet_w, sheet_h, sheet_m, clearance, dpi = values
-    resolution = Resolution(dpi=float(dpi))
-    background_rgba = _background_rgba(req.background_color)
+    # Every mutating step below -- collision re-check, TIFF export, QA check,
+    # moving processed originals, and the final save_job_state -- previously
+    # ran with NO lock at all, unlike every other endpoint that mutates this
+    # same job's state file. confirmAndExport's own frontend retry path
+    # (nestingJobStore.ts) resends this exact request when a response is lost
+    # on a long-running call, which is precisely the case a lost response on
+    # a real multi-minute export+QA call produces: two concurrent
+    # confirm_and_export calls for the SAME job_id, both re-validating the
+    # same placed_sheets, both writing to the same output_tiff_path(job_id)
+    # file via export_multi_sheet_tiff, and both eventually calling
+    # save_job_state with independently-computed results -- whichever finishes
+    # last silently wins, and the TIFF on disk can end up not matching either
+    # call's own QA report. Wrapping the whole body in the same per-job lock
+    # compute_layout already holds for its own full duration serializes any
+    # overlapping confirm attempts exactly the way compute attempts already
+    # are, without changing behavior for the single-caller case at all.
+    lock = await _get_job_lock(job_id)
+    async with lock:
+        # Re-read state now that the lock is held, mirroring compute_layout's
+        # identical re-read: a second confirm call queued behind the first
+        # must see whatever the first call already committed (e.g. it may now
+        # already be "confirmed"), not the snapshot read before either call
+        # took the lock.
+        state = load_job_state(job_id)
+        if state.stage == "confirmed" and state.output_tiff_path and Path(state.output_tiff_path).exists():
+            return ConfirmResponse(
+                job_id=job_id,
+                output_tiff_path=state.output_tiff_path,
+                export_accepted=bool(state.output_export_accepted),
+                qa_violations=[QaViolationResponse(**item) for item in state.qa_violations],
+                width_px=int(state.output_width_px or 0),
+                height_px=int(state.output_height_px or 0),
+                dpi=float(state.output_dpi or state.dpi or 0),
+                page_count=len(sheets_from_state(state)) or 1,
+                layer_count=int(state.output_layer_count or 0),
+                processed_images_directory=state.processed_images_directory,
+                moved_processed_images_count=int(state.moved_processed_images_count or 0),
+            )
+        if state.stage != "computed":
+            raise HTTPException(status_code=400, detail="لازم تعمل compute قبل confirm.")
+        placed_sheets = sheets_from_state(state)
+        if not placed_sheets or not any(placed_sheets):
+            raise HTTPException(status_code=400, detail="لا توجد قطع مرتبة للتصدير.")
 
-    # Each page is geometrically independent and must pass the same exact
-    # collision/clearance validation before a TIFF frame is ever generated.
-    collision_reports = [
-        validate_layout(
-            placed_parts,
-            float(sheet_w),
-            float(sheet_h),
-            float(sheet_m),
-            clearance_mm=float(clearance),
-        )
-        for placed_parts in placed_sheets
-    ]
-    if not all(report.is_valid for report in collision_reports):
-        raise HTTPException(status_code=409, detail="الـlayout تغيّر أو غير صالح: توجد مخالفات هندسية قبل التصدير.")
+        values = (state.sheet_width_mm, state.sheet_height_mm, state.sheet_margin_mm, state.clearance_mm, state.dpi)
+        if any(value is None for value in values):
+            raise HTTPException(status_code=500, detail="حالة الـjob ناقصة.")
+        sheet_w, sheet_h, sheet_m, clearance, dpi = values
+        resolution = Resolution(dpi=float(dpi))
+        background_rgba = _background_rgba(req.background_color)
 
-    # Progress scale for the whole confirm/export call: one unit per sheet
-    # written, then 4 more units for the sequential QA checks that follow.
-    # export_multi_sheet_tiff and run_qa_check each report on their own local
-    # scale through the callbacks below; this offsets both onto one
-    # consistent done/total the SSE stream (already used by /layout/compute)
-    # can display as a single coherent percentage.
-    sheet_total = len(placed_sheets)
-    qa_stage_total = 4
-    overall_total = sheet_total + qa_stage_total
-    _set_progress(
-        job_id,
-        (0, overall_total, len(placed_sheets[0]) if placed_sheets else 0, "جاري بدء التصدير..."),
-    )
+        # Each page is geometrically independent and must pass the same exact
+        # collision/clearance validation before a TIFF frame is ever generated.
+        collision_reports = [
+            validate_layout(
+                placed_parts,
+                float(sheet_w),
+                float(sheet_h),
+                float(sheet_m),
+                clearance_mm=float(clearance),
+            )
+            for placed_parts in placed_sheets
+        ]
+        if not all(report.is_valid for report in collision_reports):
+            raise HTTPException(status_code=409, detail="الـlayout تغيّر أو غير صالح: توجد مخالفات هندسية قبل التصدير.")
 
-    def _export_sheet_progress(sheet_done: int, _sheet_total: int, message: str) -> None:
-        _set_progress_from_worker(
+        # Progress scale for the whole confirm/export call: one unit per sheet
+        # written, then 4 more units for the sequential QA checks that follow.
+        # export_multi_sheet_tiff and run_qa_check each report on their own local
+        # scale through the callbacks below; this offsets both onto one
+        # consistent done/total the SSE stream (already used by /layout/compute)
+        # can display as a single coherent percentage.
+        sheet_total = len(placed_sheets)
+        qa_stage_total = 4
+        overall_total = sheet_total + qa_stage_total
+        _set_progress(
             job_id,
-            (sheet_done, overall_total, len(placed_sheets[0]) if placed_sheets else 0, message),
+            (0, overall_total, len(placed_sheets[0]) if placed_sheets else 0, "جاري بدء التصدير..."),
         )
 
-    def _export_qa_progress(check_done: int, _check_total: int, message: str) -> None:
-        _set_progress_from_worker(
-            job_id,
-            (sheet_total + check_done, overall_total, len(placed_sheets[0]) if placed_sheets else 0, message),
-        )
+        def _export_sheet_progress(sheet_done: int, _sheet_total: int, message: str) -> None:
+            _set_progress_from_worker(
+                job_id,
+                (sheet_done, overall_total, len(placed_sheets[0]) if placed_sheets else 0, message),
+            )
 
-    try:
-        tiff_result = await run_in_threadpool(
-            export_multi_sheet_tiff,
-            placed_sheets,
-            float(sheet_w),
-            float(sheet_h),
-            resolution,
-            output_tiff_path(state.job_id),
-            mode=req.mode,
-            background_rgba=background_rgba,
-            on_sheet_progress=_export_sheet_progress,
-        )
-        qa_report = await run_in_threadpool(
-            run_qa_check,
-            tiff_result.file_path,
-            placed_sheets,
-            float(sheet_w),
-            float(sheet_h),
-            float(sheet_m),
-            resolution,
-            clearance_mm=float(clearance),
-            on_check_progress=_export_qa_progress,
-        )
-    except Exception as exc:
-        logger.exception("confirm/export failed job=%s", job_id)
-        _finish_progress(job_id, "توقف التصدير بسبب خطأ.")
-        raise HTTPException(status_code=500, detail=f"فشل التصدير أو الـQA: {exc}") from exc
+        def _export_qa_progress(check_done: int, _check_total: int, message: str) -> None:
+            _set_progress_from_worker(
+                job_id,
+                (sheet_total + check_done, overall_total, len(placed_sheets[0]) if placed_sheets else 0, message),
+            )
 
-    processed_result = None
-    if qa_report.is_valid:
-        placed_part_ids = {
-            part.part_id for placed_parts in placed_sheets for part in placed_parts
-        }
         try:
-            processed_result = await run_in_threadpool(
-                move_processed_originals,
-                state.parts,
-                placed_part_ids,
-                req.processed_images_path,
-                folder_name=req.folder_name,
+            tiff_result = await run_in_threadpool(
+                export_multi_sheet_tiff,
+                placed_sheets,
+                float(sheet_w),
+                float(sheet_h),
+                resolution,
+                output_tiff_path(state.job_id),
+                mode=req.mode,
+                background_rgba=background_rgba,
+                on_sheet_progress=_export_sheet_progress,
             )
-        except ProcessedImagesError as exc:
-            logger.exception("processed originals move failed job=%s", job_id)
-            _finish_progress(job_id, "تم إنشاء ملف TIFF لكن توقف نقل الصور الأصلية.")
-            raise HTTPException(
-                status_code=409,
-                detail=f"تم إنشاء TIFF لكن لم يتم نقل الصور الأصلية: {exc}",
-            ) from exc
+            qa_report = await run_in_threadpool(
+                run_qa_check,
+                tiff_result.file_path,
+                placed_sheets,
+                float(sheet_w),
+                float(sheet_h),
+                float(sheet_m),
+                resolution,
+                clearance_mm=float(clearance),
+                on_check_progress=_export_qa_progress,
+            )
+        except Exception as exc:
+            logger.exception("confirm/export failed job=%s", job_id)
+            _finish_progress(job_id, "توقف التصدير بسبب خطأ.")
+            raise HTTPException(status_code=500, detail=f"فشل التصدير أو الـQA: {exc}") from exc
 
-    _finish_progress(job_id, "اكتمل التصدير والتحقق النهائي.")
-    state.stage = "confirmed"
-    state.output_tiff_path = tiff_result.file_path
-    state.output_export_accepted = qa_report.is_valid
-    state.output_width_px = tiff_result.width_px
-    state.output_height_px = tiff_result.height_px
-    state.output_dpi = tiff_result.dpi_x
-    state.output_layer_count = tiff_result.layer_count
-    state.background_color = req.background_color
-    state.processed_images_path = req.processed_images_path
-    state.processed_images_directory = (
-        processed_result.directory if processed_result is not None else None
-    )
-    state.moved_processed_images_count = (
-        processed_result.moved_count if processed_result is not None else 0
-    )
-    state.qa_violations = [
-        {"severity": v.severity, "detail": v.detail, "expected": v.expected, "actual": v.actual}
-        for v in qa_report.violations
-    ]
-    save_job_state(state)
-    return ConfirmResponse(
-        job_id=job_id,
-        output_tiff_path=tiff_result.file_path,
-        export_accepted=qa_report.is_valid,
-        qa_violations=[
-            QaViolationResponse(
-                severity=v.severity,
-                detail=v.detail,
-                expected=v.expected,
-                actual=v.actual,
-            )
+        processed_result = None
+        if qa_report.is_valid:
+            placed_part_ids = {
+                part.part_id for placed_parts in placed_sheets for part in placed_parts
+            }
+            try:
+                processed_result = await run_in_threadpool(
+                    move_processed_originals,
+                    state.parts,
+                    placed_part_ids,
+                    req.processed_images_path,
+                    folder_name=req.folder_name,
+                )
+            except ProcessedImagesError as exc:
+                logger.exception("processed originals move failed job=%s", job_id)
+                _finish_progress(job_id, "تم إنشاء ملف TIFF لكن توقف نقل الصور الأصلية.")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"تم إنشاء TIFF لكن لم يتم نقل الصور الأصلية: {exc}",
+                ) from exc
+
+        _finish_progress(job_id, "اكتمل التصدير والتحقق النهائي.")
+        state.stage = "confirmed"
+        state.output_tiff_path = tiff_result.file_path
+        state.output_export_accepted = qa_report.is_valid
+        state.output_width_px = tiff_result.width_px
+        state.output_height_px = tiff_result.height_px
+        state.output_dpi = tiff_result.dpi_x
+        state.output_layer_count = tiff_result.layer_count
+        state.background_color = req.background_color
+        state.processed_images_path = req.processed_images_path
+        state.processed_images_directory = (
+            processed_result.directory if processed_result is not None else None
+        )
+        state.moved_processed_images_count = (
+            processed_result.moved_count if processed_result is not None else 0
+        )
+        state.qa_violations = [
+            {"severity": v.severity, "detail": v.detail, "expected": v.expected, "actual": v.actual}
             for v in qa_report.violations
-        ],
-        width_px=tiff_result.width_px,
-        height_px=tiff_result.height_px,
-        dpi=tiff_result.dpi_x,
-        page_count=tiff_result.page_count,
-        layer_count=tiff_result.layer_count,
-        processed_images_directory=state.processed_images_directory,
-        moved_processed_images_count=state.moved_processed_images_count,
-    )
-
+        ]
+        save_job_state(state)
+        return ConfirmResponse(
+            job_id=job_id,
+            output_tiff_path=tiff_result.file_path,
+            export_accepted=qa_report.is_valid,
+            qa_violations=[
+                QaViolationResponse(
+                    severity=v.severity,
+                    detail=v.detail,
+                    expected=v.expected,
+                    actual=v.actual,
+                )
+                for v in qa_report.violations
+            ],
+            width_px=tiff_result.width_px,
+            height_px=tiff_result.height_px,
+            dpi=tiff_result.dpi_x,
+            page_count=tiff_result.page_count,
+            layer_count=tiff_result.layer_count,
+            processed_images_directory=state.processed_images_directory,
+            moved_processed_images_count=state.moved_processed_images_count,
+        )
 
 @app.get("/download/{job_id}")
 async def download_tiff(job_id: str) -> FileResponse:

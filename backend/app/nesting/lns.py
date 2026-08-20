@@ -577,7 +577,7 @@ def _repair(
     if merged_cache is None:
         merged_cache = {}
 
-    for part_id in ordered:
+    for order_index, part_id in enumerate(ordered):
         if check_cancelled and check_cancelled():
             raise NestingCancelledError("تم إلغاء عملية تحسين الترتيب من قبل المستخدم.")
         # Soft, best-effort deadline, mirroring engine.py's identical pattern:
@@ -589,7 +589,7 @@ def _repair(
         # placement failure -- run_lns_optimization's scoring already handles
         # a smaller resulting placed_count correctly, no separate branch needed.
         if deadline is not None and time.monotonic() >= deadline:
-            still_unplaced.extend(ordered[ordered.index(part_id):])
+            still_unplaced.extend(ordered[order_index:])
             break
         part_input = parts_mm[part_id]
         winning_rotation: _PreparedRotation | None = None

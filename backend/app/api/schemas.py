@@ -60,6 +60,11 @@ class ComputeRequest(BaseModel):
     packing_attempts: int = Field(default=1, ge=1, le=1)
 
 
+class ContourPointPreview(BaseModel):
+    x_mm: float
+    y_mm: float
+
+
 class PlacedPartPreview(BaseModel):
     part_id: str
     rotation_deg: int
@@ -69,6 +74,16 @@ class PlacedPartPreview(BaseModel):
     bounds_max_y_mm: float
     centroid_x_mm: float
     centroid_y_mm: float
+    # Exact placed contour (rotated + translated), exterior ring only, in the
+    # same sheet mm coordinate space as bounds_*/centroid_* above. Populated
+    # from part.placed_shape_mm.exterior.coords in main.py's _placed_previews.
+    # Optional/defaulted for backward compatibility with any client that
+    # still expects the old bounds-only shape -- omitting it degrades
+    # gracefully to the previous bounding-box rendering rather than failing
+    # validation. A real, possibly irregular, contour is what the frontend's
+    # review-before-export canvas now draws instead of a synthesized
+    # axis-aligned rectangle for every part.
+    contour_mm: list[ContourPointPreview] = []
 
 
 class JobStatusResponse(CreateJobResponse):

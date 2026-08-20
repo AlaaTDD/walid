@@ -387,11 +387,17 @@ def part_inputs_from_state(state: JobState) -> dict[str, PartInput]:
         else:
             centroid_px = (part.source_centroid_x_px, part.source_centroid_y_px)
 
-        # Apply morphological smoothing to drastically reduce vertex count (e.g. from 200 to 20)
-        # without expanding the outer envelope. This makes NFP computation instant (0.01s vs 1.5s).
-        raw_shape = wkt_to_geometry(part.contour_wkt)
-        smoothed = raw_shape.buffer(2.0, join_style=2).buffer(-4.0, join_style=2).buffer(2.0, join_style=2)
-        shape_mm = smoothed.simplify(1.0, preserve_topology=True)
+        # contour_wkt already carries the vertex-reduced, simplified contour produced
+        # once at upload time (geometry/contour.py's extract_contour_from_rgba, which
+        # applies simplify(tolerance) to the raw traced contour before it is ever
+        # stored). Re-applying a second, independent buffer(2.0)->buffer(-4.0)->
+        # buffer(2.0)->simplify(1.0) smoothing pass here on every single compute() call
+        # drifted the geometry a second time away from the already-simplified upload
+        # contour, contradicting this project's documented 100%-geometric-precision
+        # principle (see geometry/units.py, nesting/nfp.py) for no measurable benefit --
+        # the vertex-count reduction this comment described (200 -> 20) is already fully
+        # achieved once at upload, not something this second pass still needs to do.
+        shape_mm = wkt_to_geometry(part.contour_wkt)
         if not shape_mm.is_valid:
             shape_mm = shape_mm.buffer(0)
         

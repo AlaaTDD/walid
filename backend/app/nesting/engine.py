@@ -1452,18 +1452,50 @@ def run_nesting(
                         on_progress(processed, total, len(placed))
                     break
         else:
-            # _place_one_part is only ever called (in the branch above) with
-            # source_shape_mm set, which enables Fine Rotation Refinement and
-            # makes its return a 4-tuple whose 4th element is the winning
-            # _PreparedRotation itself (see _place_one_part's own docstring).
-            # That 4th element MUST be used directly here rather than looked
-            # up from prepared_rotations[part_id] by angle: a refined winner's
-            # angle can be a FINE_* member that prepared_rotations (built only
-            # from the 24 coarse ALL_ROTATIONS in _prepare_rotations) does not
-            # contain, which would otherwise raise StopIteration -- and before
-            # this fix, the 4-tuple itself was being unpacked into 3 names,
-            # which raised ValueError on every successful exact-NFP placement.
-            angle, final_shape, center, winning_rotation = result
+            # BUG (found and fixed here): the branch above (result is not
+            # None) previously ALWAYS unpacked `result` as the 4-tuple
+            # (angle, final_shape, center, winning_rotation) that only
+            # _place_one_part returns (see its docstring: called with
+            # source_shape_mm set, enabling Fine Rotation Refinement, whose
+            # 4th element -- the winning _PreparedRotation itself -- must be
+            # used directly rather than looked up from prepared_rotations by
+            # angle, since a refined winner's angle can be a FINE_* member
+            # prepared_rotations' coarse-only table does not contain).
+            #
+            # But `result` here can ALSO come from _place_one_part_fast (line
+            # ~1412, taken whenever use_fast_candidate_path is True), whose
+            # own declared return type is the plain 3-tuple
+            # tuple[LockedRotation, BaseGeometry, tuple[float, float]] | None
+            # -- it has no Fine Rotation Refinement and never returns a 4th
+            # element. Unpacking that 3-tuple into 4 names raised
+            # `ValueError: not enough values to unpack (expected 4, got 3)`
+            # on the FIRST successful fast-path placement of every job whose
+            # geometry crosses _FAST_PATH_MAX_VERTICES/_FAST_PATH_TOTAL_VERTICES
+            # (confirmed by direct reproduction: a 2-part job with ~600k/500k
+            # vertices raised this exact ValueError before this fix, and ran
+            # to a clean SUCCESS after it). Every real stored production job
+            # under backend/jobs/ stays under that vertex threshold today, so
+            # this was latent rather than user-visible yet -- but any upload
+            # complex/detailed enough to cross it (e.g. a highly detailed
+            # traced image or complex SVG that geometry/contour.py's
+            # simplify() does not reduce enough) would 500 on first compute.
+            #
+            # Fix: branch on use_fast_candidate_path (already in scope, the
+            # same flag that chose which function to call above) to unpack
+            # the arity that function actually returns, matching the
+            # existing correct pattern already used lower in this same file
+            # for the fast-path backfill sweep (`angle, final_shape, center =
+            # result` there, vs. lns.py's `_repair` which applies the
+            # identical use_fast_candidate_path-gated unpack for the same
+            # reason). occupied_zones is only ever appended to in the exact
+            # (non-fast) branch -- unchanged -- since the fast path tracks
+            # occupancy via `placed`/STRtree instead (see _place_one_part_fast
+            # and _find_fast_placement above), so winning_rotation is simply
+            # never produced or needed on that path.
+            if use_fast_candidate_path:
+                angle, final_shape, center = result
+            else:
+                angle, final_shape, center, winning_rotation = result
             placed.append(
                 PlacedPart(
                     part_id=part_id,
@@ -1553,11 +1585,11 @@ def run_nesting(
             for sweep in range(3):  # up to 3 sweeps
                 placed_this_sweep = 0
                 next_round: list[str] = []
-                for part_id in backfill_ordered:
+                for order_index, part_id in enumerate(backfill_ordered):
                     if check_cancelled and check_cancelled():
                         raise NestingCancelledError("تم إلغاء عملية الترتيب من قبل المستخدم.")
                     if backfill_deadline is not None and time.monotonic() >= backfill_deadline:
-                        next_round.extend(backfill_ordered[backfill_ordered.index(part_id):])
+                        next_round.extend(backfill_ordered[order_index:])
                         break
                     result = _place_one_part_fast(
                         prepared_rotations[part_id],

@@ -92,13 +92,25 @@ def test_only_exported_originals_are_moved_after_success(tmp_path, monkeypatch):
     archive = Path(payload["processed_images_directory"])
     assert payload["moved_processed_images_count"] == 1
     assert archive.parent == archive_root
-    assert (archive / source.name).exists()
+    # move_processed_originals organises files into placed/ and unplaced/
+    # subdirectories of the operation directory (see api/processed_images.py's
+    # own docstring and _new_operation_directory/placed_dir/unplaced_dir). The
+    # single uploaded part here is always placed (one small part on a 100x100mm
+    # sheet), so it lands under the "placed" subdirectory, not directly under
+    # the operation directory itself.
+    assert (archive / "placed" / source.name).exists()
     assert not source.exists()
     assert untouched.exists()
 
 
-def test_unplaced_originals_stay_in_the_source_folder(tmp_path, monkeypatch):
-    """A one-page export must move only the part that actually entered it."""
+def test_unplaced_originals_are_archived_separately_from_placed(tmp_path, monkeypatch):
+    """A one-page export archives every uploaded original: placed parts go
+    under the operation directory's placed/ subfolder, unplaced parts go
+    under its unplaced/ subfolder -- see api/processed_images.py's
+    move_processed_originals docstring for the documented, intentional
+    placed/unplaced split. Both leave the original source path, so this test
+    only asserts each ends up in the correct destination subfolder.
+    """
     monkeypatch.setattr(job_storage, "DEFAULT_JOBS_ROOT", tmp_path / "jobs")
     client = TestClient(app)
     first_source = tmp_path / "first.png"
@@ -147,9 +159,16 @@ def test_unplaced_originals_stay_in_the_source_folder(tmp_path, monkeypatch):
         json={"mode": "RGB", "processed_images_path": str(tmp_path / "archive")},
     )
     assert confirm.status_code == 200
-    assert confirm.json()["moved_processed_images_count"] == 1
+    payload = confirm.json()
+    # Both the placed and the unplaced original are moved (organised into
+    # separate placed/ and unplaced/ subfolders of the operation directory),
+    # not just the placed one -- see move_processed_originals' own docstring.
+    assert payload["moved_processed_images_count"] == 2
+    archive = Path(payload["processed_images_directory"])
     assert not source_by_part[placed_id].exists()
-    assert source_by_part[unplaced_id].exists()
+    assert not source_by_part[unplaced_id].exists()
+    assert (archive / "placed" / source_by_part[placed_id].name).exists()
+    assert (archive / "unplaced" / source_by_part[unplaced_id].name).exists()
 
 
 def test_original_files_are_not_moved_when_qa_fails_or_source_changed(tmp_path, monkeypatch):

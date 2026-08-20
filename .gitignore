@@ -20,3 +20,12 @@ frontend/.flutter-plugins-dependencies
 # Release outputs
 release/
 backend/jobs/
+
+# Next.js web frontend
+web/node_modules/
+web/.next/
+web/out/
+web/.vercel/
+web/*.tsbuildinfo
+web/next-env.d.ts
+web/.env*.local

@@ -129,9 +129,13 @@ def _geometry_from_alpha(
     
     try:
         # 4. Morphological smoothing to drastically reduce vertices for NFP computation.
-        # 5. Aggressive simplification for NFP speed (2.5mm tolerance keeps shapes highly recognizable
-        # but drops average vertices from ~37 to ~20, speeding up O(N^2) NFP generation by 4x).
-        simplified = merged.simplify(2.5, preserve_topology=True)
+        # 5. Aggressive simplification for NFP speed. simplify_tolerance_mm defaults to
+        # a DPI-aware value computed above (max(px_to_mm(0.5, resolution), 1.0mm)) so a
+        # caller passing an explicit tolerance is honoured, rather than silently
+        # discarded in favour of a fixed 2.5mm regardless of resolution or the caller's
+        # own request (see extract_contour_from_image/extract_contour_from_rgba's own
+        # simplify_tolerance_mm parameter, which previously had no effect at all).
+        simplified = merged.simplify(simplify_tolerance_mm, preserve_topology=True)
         
         if not simplified.is_valid:
             simplified = simplified.buffer(0)
