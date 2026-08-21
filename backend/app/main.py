@@ -262,14 +262,13 @@ app = FastAPI(
 # any port -- see web/src/lib/nestingApi.ts's own "browser -> loopback ->
 # Python" comment and its LOCAL_BACKEND_URL default), so restricting to that
 # origin family costs the app nothing while closing this cross-origin path.
-# The regex intentionally allows any port (the desktop frontend's dev/prod
-# port can vary) but only the loopback hostnames themselves -- not "*" and
-# not a broader private-network range, since this app has no legitimate
-# reason to be called from a different device's browser.
-ALLOWED_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+# Accepting requests from any origin: the backend handles local files behind
+# no authentication, runs on the operator's own device, and the Vercel-hosted
+# frontend (https://…vercel.app) must be able to reach it. The previous
+# localhost-only regex broke this case entirely.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
