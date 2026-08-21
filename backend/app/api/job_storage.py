@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -53,6 +54,122 @@ def _default_jobs_root() -> Path:
 
 
 DEFAULT_JOBS_ROOT = _default_jobs_root()
+
+
+def _app_binary_dir() -> Path:
+    """Directory containing the running executable, on any OS.
+
+    - Frozen (PyInstaller) build: the folder holding the .exe/binary itself
+      (e.g. .../ForClient/ on macOS, or the install folder on Windows),
+      taken from ``sys.executable`` at run time -- never a path written in
+      source, so it is correct no matter which machine/OS the .app or the
+      installed .exe was moved to or run from.
+    - Not frozen (plain ``python main.py`` during development): the ForClient/
+      package folder relative to this source file, i.e. three levels up from
+      backend/app/api/ -> backend/, then its ForClient/ sibling. Falls back to
+      the current working directory if that layout is not present, so this
+      never raises during development.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    dev_for_client = Path(__file__).resolve().parent.parent.parent.parent / "ForClient"
+    if dev_for_client.is_dir():
+        return dev_for_client
+    return Path.cwd()
+
+
+IMAGES_DIRNAME = "images"
+
+
+def _default_images_root() -> Path:
+    """Default folder, next to the running app, that holds client images.
+
+    Layout created under it:
+        images/
+            uploaded/   -- every image added to a job (copied in as it is
+                           uploaded, kept regardless of placed/unplaced)
+            remaining/  -- images still unplaced/pending at last export
+            final/      -- the last exported output.tiff for each job
+
+    The environment variable ``NESTING_IMAGES_ROOT`` overrides this, for the
+    same reason ``NESTING_JOBS_ROOT`` exists: custom/headless deployments.
+    """
+    env = os.getenv("NESTING_IMAGES_ROOT")
+    if env:
+        return Path(env)
+    return _app_binary_dir() / IMAGES_DIRNAME
+
+
+DEFAULT_IMAGES_ROOT = _default_images_root()
+UPLOADED_IMAGES_DIRNAME = "uploaded"
+REMAINING_IMAGES_DIRNAME = "remaining"
+FINAL_TIFF_DIRNAME = "final"
+
+
+def _images_job_dir(job_id: str, images_root: Path | None = None) -> Path:
+    """Per-session (per-job) folder under images/: images/<job_id>/.
+
+    Each job/session gets its own folder here, named with the same job_id
+    UUID the job already uses everywhere else (job_state.json's own folder
+    under DEFAULT_JOBS_ROOT, output_tiff_path, etc.) -- not a separately
+    invented session id. validate_job_id() rejects anything that is not that
+    exact UUID shape, so this can never be pointed at an arbitrary path.
+    """
+    root = DEFAULT_IMAGES_ROOT if images_root is None else images_root
+    validate_job_id(job_id)
+    return root / job_id
+
+
+def images_job_dir(job_id: str, images_root: Path | None = None) -> Path:
+    """Public accessor for images/<job_id>/ -- the whole per-job image folder
+    (uploaded/, remaining/, final/ together), without creating it.
+
+    Exists specifically so a caller that needs to REMOVE this tree (job
+    deletion) can get the exact same path every images_*_dir() helper above
+    already writes into, instead of reconstructing DEFAULT_IMAGES_ROOT / job_id
+    by hand -- which would silently drift out of sync if this module's layout
+    ever changes. Unlike ensure_images_job_dir(), this does not create the
+    directory or its subfolders; a job that never had any images uploaded may
+    have no images/<job_id>/ folder at all, and the caller (shutil.rmtree with
+    ignore_errors=True) already handles a nonexistent path safely.
+    """
+    return _images_job_dir(job_id, images_root)
+
+
+def images_uploaded_dir(job_id: str, images_root: Path | None = None) -> Path:
+    """images/<job_id>/uploaded/ -- every image added to this one job."""
+    path = _images_job_dir(job_id, images_root) / UPLOADED_IMAGES_DIRNAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def images_remaining_dir(job_id: str, images_root: Path | None = None) -> Path:
+    """images/<job_id>/remaining/ -- images still unplaced/pending for this job."""
+    path = _images_job_dir(job_id, images_root) / REMAINING_IMAGES_DIRNAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def images_final_dir(job_id: str, images_root: Path | None = None) -> Path:
+    """images/<job_id>/final/ -- this job's exported output.tiff."""
+    path = _images_job_dir(job_id, images_root) / FINAL_TIFF_DIRNAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def ensure_images_job_dir(job_id: str, images_root: Path | None = None) -> Path:
+    """Create images/<job_id>/ with its uploaded/remaining/final subfolders.
+
+    Call this once per job/session (e.g. alongside create_job()) so every
+    session gets its own three subfolders instead of one shared set.
+    """
+    job_dir = _images_job_dir(job_id, images_root)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    images_uploaded_dir(job_id, images_root)
+    images_remaining_dir(job_id, images_root)
+    images_final_dir(job_id, images_root)
+    return job_dir
+
 
 JOB_STATE_FILENAME = "job_state.json"
 UPLOADS_DIRNAME = "uploads"
@@ -104,6 +221,136 @@ class StoredPart:
     alpha_bbox_y1_px: int | None = None
 
 
+def _unique_client_facing_name(
+    directory: Path,
+    original_filename: str,
+    fallback: str,
+) -> Path:
+    """Pick a filesystem-safe destination inside ``directory``.
+
+    The client only ever sees images/<job_id>/{uploaded,remaining,final}/, so
+    names there use the client's own original_filename (not the internal
+    part_id) -- the same file the client dragged in should be recognisable
+    by name in this folder on either macOS or Windows. Path separators/null
+    bytes are stripped so a crafted filename can never escape this directory,
+    and a name collision (two different uploads sharing one filename) gets a
+    numeric suffix instead of silently overwriting the earlier file.
+    """
+    candidate = Path(original_filename).name.strip()
+    candidate = re.sub(r"[\x00/\\]", "_", candidate) or fallback
+    destination = directory / candidate
+    if not destination.exists():
+        return destination
+    stem, suffix = destination.stem, destination.suffix
+    index = 1
+    while True:
+        destination = directory / f"{stem}_{index}{suffix}"
+        if not destination.exists():
+            return destination
+        index += 1
+
+
+def copy_uploaded_image_into_images_dir(
+    job_id: str,
+    part: StoredPart,
+    images_root: Path | None = None,
+) -> None:
+    """Copy one just-saved upload into images/<job_id>/uploaded/.
+
+    This is a COPY, not a move: stored_image_path (under DEFAULT_JOBS_ROOT)
+    remains the path every downstream stage (contour extraction, nesting,
+    compositing, TIFF export) actually reads from, and must keep existing
+    unchanged regardless of whether this client-visible copy succeeds. A
+    copy failure here (e.g. a read-only images/ folder) is therefore
+    swallowed rather than raised -- it must never block or roll back an
+    otherwise-successful upload, since the durable upload record
+    (append_pending_part/save_job_state) already committed before this runs.
+    """
+    source = Path(part.stored_image_path)
+    if not source.is_file():
+        return
+    try:
+        destination_dir = images_uploaded_dir(job_id, images_root)
+        destination = _unique_client_facing_name(
+            destination_dir, part.original_filename, f"image_{part.part_id}{source.suffix}"
+        )
+        shutil.copy2(str(source), str(destination))
+    except OSError:
+        pass
+
+
+def sync_images_final_and_remaining(
+    job_id: str,
+    parts: list[StoredPart],
+    unplaced_part_ids: set[str],
+    exported_tiff_path: str | Path,
+    images_root: Path | None = None,
+) -> None:
+    """After a successful confirm/export, refresh images/<job_id>/final/ and
+    images/<job_id>/remaining/ so the client-visible folder always reflects
+    the LATEST export -- not an accumulation across every /layout/confirm
+    call for the same job (a recompute+re-export must not leave stale
+    remaining/ images from a superseded layout sitting next to the current
+    ones).
+
+    final/      -- cleared, then the just-exported TIFF is copied in.
+    remaining/  -- cleared, then every part that is either explicitly
+                   unplaced (in unplaced_part_ids) or was never placed at all
+                   (rejected, is_valid=False) is copied in. A rejected image
+                   was never part of the nesting run and therefore can never
+                   appear in unplaced_part_ids, but from the client's own
+                   point of view it is just as much "still remaining" as an
+                   unplaced-but-valid one.
+
+    Best-effort by design (see copy_uploaded_image_into_images_dir): a
+    filesystem problem here must not fail an otherwise-successful export,
+    since output_tiff_path under DEFAULT_JOBS_ROOT is already the durable,
+    verified result this function only mirrors for client visibility.
+    """
+    try:
+        final_dir = images_final_dir(job_id, images_root)
+        remaining_dir = images_remaining_dir(job_id, images_root)
+    except OSError:
+        return
+
+    def _clear_dir(directory: Path) -> None:
+        for existing in directory.iterdir():
+            try:
+                if existing.is_file() or existing.is_symlink():
+                    existing.unlink(missing_ok=True)
+                elif existing.is_dir():
+                    shutil.rmtree(existing, ignore_errors=True)
+            except OSError:
+                pass
+
+    try:
+        _clear_dir(final_dir)
+        tiff_source = Path(exported_tiff_path)
+        if tiff_source.is_file():
+            shutil.copy2(str(tiff_source), str(final_dir / tiff_source.name))
+    except OSError:
+        pass
+
+    try:
+        _clear_dir(remaining_dir)
+        for part in parts:
+            still_remaining = (not part.is_valid) or (part.part_id in unplaced_part_ids)
+            if not still_remaining:
+                continue
+            source = Path(part.stored_image_path)
+            if not source.is_file():
+                continue
+            destination = _unique_client_facing_name(
+                remaining_dir, part.original_filename, f"image_{part.part_id}{source.suffix}"
+            )
+            try:
+                shutil.copy2(str(source), str(destination))
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 @dataclass
 class StoredPlacedPart:
     part_id: str
@@ -146,9 +393,6 @@ class JobState:
     output_dpi: float | None = None
     output_layer_count: int = 0
     background_color: str | None = None
-    processed_images_path: str | None = None
-    processed_images_directory: str | None = None
-    moved_processed_images_count: int = 0
     qa_violations: list[dict] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
@@ -348,9 +592,6 @@ def load_job_state(job_id: str, jobs_root: Path | None = None) -> JobState:
             output_dpi=payload.get("output_dpi"),
             output_layer_count=int(payload.get("output_layer_count", 0)),
             background_color=payload.get("background_color"),
-            processed_images_path=payload.get("processed_images_path"),
-            processed_images_directory=payload.get("processed_images_directory"),
-            moved_processed_images_count=int(payload.get("moved_processed_images_count", 0)),
             qa_violations=payload.get("qa_violations", []),
             created_at=payload.get("created_at", ""),
             updated_at=payload.get("updated_at", ""),

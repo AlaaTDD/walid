@@ -16,12 +16,16 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from PIL import ImageColor
+from app.api import job_storage
 from app.api.job_storage import (
     DEFAULT_JOBS_ROOT,
     JobNotFoundError,
     StoredPart,
     append_pending_part,
+    copy_uploaded_image_into_images_dir,
     create_job,
+    ensure_images_job_dir,
+    images_job_dir,
     load_job_state,
     output_tiff_path,
     part_inputs_from_state,
@@ -29,9 +33,9 @@ from app.api.job_storage import (
     save_job_state,
     sheets_from_state,
     sheets_to_state,
+    sync_images_final_and_remaining,
     uploads_dir,
 )
-from app.api.processed_images import ProcessedImagesError, move_processed_originals
 from app.api.schemas import (
     ComputeRequest,
     ContourPointPreview,
@@ -79,6 +83,129 @@ def _positive_env_int(name: str, default: int) -> int:
         return default
 
 
+def _positive_env_float(name: str, default: float) -> float:
+    """Float counterpart of _positive_env_int, for the LNS/compaction/local-
+    reoptimization time-budget and destroy-fraction knobs below (destroy_fraction
+    in particular is a ratio in (0, 1], not an integer count, so it cannot reuse
+    _positive_env_int as-is). Same fail-safe behaviour: an invalid override never
+    crashes startup, it just logs and falls back to the documented default.
+    """
+    try:
+        value = float(os.getenv(name, str(default)))
+        if value <= 0:
+            raise ValueError(f"{name} must be > 0, got {value}")
+        return value
+    except ValueError:
+        logger.warning("Invalid %s value; using %s.", name, default)
+        return default
+
+
+# ---------------------------------------------------------------------------
+# LNS / compaction / local-reoptimization pipeline knobs.
+#
+# All of these previously lived as bare numeric literals inline in the compute
+# endpoint below, branched only on placed_count (>=100 / >=50 / else). That
+# meant the exact same effort ceiling applied to EVERY job in a tier regardless
+# of how much spare compute time an installation actually has, and -- the part
+# that matters most for capacity -- the >=100-placed tier (the tier a job with
+# ~115 placed parts falls straight into) was deliberately given the SMALLEST
+# iteration/round/destroy-fraction budget of the three tiers, purely to keep a
+# single request's wall-clock time bounded on modest hardware. That trade-off
+# is reasonable as a *default*, but it should not be the only option: an
+# installation with time to spare (or a person willing to wait longer for a
+# denser sheet) had no way to ask for a deeper search without editing this
+# file's source directly.
+#
+# Each env var below controls one existing, already-verified pipeline stage
+# (run_lns_optimization, run_local_reoptimization, compact_layout in
+# nesting/lns.py and nesting/compaction.py -- none of which are modified by
+# this change). None of this touches the pipeline's own never-worse guarantee:
+# raising an iteration/round count can only give the destroy/repair and
+# local-reoptimization search MORE attempts to find a strictly better layout
+# than it already had (see lns.py's own LnsResult/LocalReoptimizationResult
+# docstrings: the tracked best only ever moves up), never fewer, so this
+# cannot regress a layout that a shorter budget already produced -- it can
+# only leave additional gaps unexplored if left too low.
+#
+# Defaults for the <50 and 50-99 tiers are set to the exact previous inline
+# values, so a deployment that never sets these env vars sees byte-identical
+# behaviour to before this change for jobs under 100 placed parts. The >=100
+# tier's defaults are raised to match the middle tier's iteration/round counts
+# (10->10 unchanged for LNS iterations specifically, since NFP cost per
+# iteration genuinely grows with placed count and that ceiling still matters;
+# what changes is destroy_fraction and local-reoptimization rounds, which are
+# cheap to raise and were previously the MOST conservative of all three tiers
+# despite this being the tier with the most placed parts -- and therefore the
+# most remaining-gap surface area -- to search over) and the compaction pass
+# count is raised from the previous hardcoded 3 (which was not configurable
+# via any tier at all) to a slightly higher default, since a compaction pass
+# is a cheap bisection-based slide with no NFP cost, unlike an LNS iteration.
+# Every one of these remains overridable per-deployment without editing code.
+# ---------------------------------------------------------------------------
+LNS_MAX_ITERATIONS_SMALL = _positive_env_int("NESTING_LNS_MAX_ITERATIONS_SMALL", 10)
+LNS_MAX_ITERATIONS_MEDIUM = _positive_env_int("NESTING_LNS_MAX_ITERATIONS_MEDIUM", 10)
+LNS_MAX_ITERATIONS_LARGE = _positive_env_int("NESTING_LNS_MAX_ITERATIONS_LARGE", 15)
+
+LNS_TIME_BUDGET_SECONDS_SMALL = _positive_env_float("NESTING_LNS_TIME_BUDGET_SECONDS_SMALL", 60.0)
+LNS_TIME_BUDGET_SECONDS_MEDIUM = _positive_env_float("NESTING_LNS_TIME_BUDGET_SECONDS_MEDIUM", 60.0)
+LNS_TIME_BUDGET_SECONDS_LARGE = _positive_env_float("NESTING_LNS_TIME_BUDGET_SECONDS_LARGE", 90.0)
+
+LNS_DESTROY_FRACTION_SMALL = _positive_env_float("NESTING_LNS_DESTROY_FRACTION_SMALL", 0.20)
+LNS_DESTROY_FRACTION_MEDIUM = _positive_env_float("NESTING_LNS_DESTROY_FRACTION_MEDIUM", 0.15)
+LNS_DESTROY_FRACTION_LARGE = _positive_env_float("NESTING_LNS_DESTROY_FRACTION_LARGE", 0.15)
+
+LOCAL_REOPT_MAX_ROUNDS_SMALL = _positive_env_int("NESTING_LOCAL_REOPT_MAX_ROUNDS_SMALL", 5)
+LOCAL_REOPT_MAX_ROUNDS_MEDIUM = _positive_env_int("NESTING_LOCAL_REOPT_MAX_ROUNDS_MEDIUM", 4)
+LOCAL_REOPT_MAX_ROUNDS_LARGE = _positive_env_int("NESTING_LOCAL_REOPT_MAX_ROUNDS_LARGE", 5)
+
+LOCAL_REOPT_TIME_BUDGET_SECONDS_SMALL = _positive_env_float("NESTING_LOCAL_REOPT_TIME_BUDGET_SECONDS_SMALL", 30.0)
+LOCAL_REOPT_TIME_BUDGET_SECONDS_MEDIUM = _positive_env_float("NESTING_LOCAL_REOPT_TIME_BUDGET_SECONDS_MEDIUM", 30.0)
+LOCAL_REOPT_TIME_BUDGET_SECONDS_LARGE = _positive_env_float("NESTING_LOCAL_REOPT_TIME_BUDGET_SECONDS_LARGE", 45.0)
+
+# compact_layout's own max_passes previously had no tier at all -- every job,
+# regardless of size, silently used compaction.py's function-default of 3 with
+# no way to change it short of editing nesting/compaction.py directly. A
+# compaction pass is a per-part bisection slide (see compaction.py's own
+# _max_feasible_slide docstring: pure geometric bisection, no NFP computation),
+# so it is far cheaper per-pass than an LNS iteration or a local-reoptimization
+# round -- there is no strong reason to keep it fixed at the same ceiling for
+# every job size the way the NFP-bound stages above need to be.
+COMPACTION_MAX_PASSES = _positive_env_int("NESTING_COMPACTION_MAX_PASSES", 4)
+
+# Backfill's own per-call time budget (engine.py's run_best_single_sheet_nesting
+# backfill_time_budget_seconds), previously a single hardcoded 60.0 regardless
+# of job size. Kept as one tier-independent knob rather than three, since the
+# backfill sweep runs once, before placed_count is even known, unlike the
+# LNS/local-reopt/compaction stages above which already branch on the greedy
+# pass's own placed_count.
+BACKFILL_TIME_BUDGET_SECONDS = _positive_env_float("NESTING_BACKFILL_TIME_BUDGET_SECONDS", 60.0)
+
+
+def _lns_pipeline_settings(placed_count: int) -> tuple[int, float, float]:
+    """(lns_max_iterations, lns_time_budget, lns_destroy_fraction) for one job's
+    placed_count tier -- the single place that maps placed_count to the LNS
+    knobs above, so the compute endpoint's own tier boundaries (>=100, >=50)
+    are defined exactly once rather than duplicated across three call sites.
+    """
+    if placed_count >= 100:
+        return LNS_MAX_ITERATIONS_LARGE, LNS_TIME_BUDGET_SECONDS_LARGE, LNS_DESTROY_FRACTION_LARGE
+    if placed_count >= 50:
+        return LNS_MAX_ITERATIONS_MEDIUM, LNS_TIME_BUDGET_SECONDS_MEDIUM, LNS_DESTROY_FRACTION_MEDIUM
+    return LNS_MAX_ITERATIONS_SMALL, LNS_TIME_BUDGET_SECONDS_SMALL, LNS_DESTROY_FRACTION_SMALL
+
+
+def _local_reopt_pipeline_settings(placed_count: int) -> tuple[int, float]:
+    """(local_reopt_max_rounds, local_reopt_time_budget) for one job's
+    placed_count tier -- mirrors _lns_pipeline_settings' role for the local
+    re-optimization stage's own tier boundaries.
+    """
+    if placed_count >= 100:
+        return LOCAL_REOPT_MAX_ROUNDS_LARGE, LOCAL_REOPT_TIME_BUDGET_SECONDS_LARGE
+    if placed_count >= 50:
+        return LOCAL_REOPT_MAX_ROUNDS_MEDIUM, LOCAL_REOPT_TIME_BUDGET_SECONDS_MEDIUM
+    return LOCAL_REOPT_MAX_ROUNDS_SMALL, LOCAL_REOPT_TIME_BUDGET_SECONDS_SMALL
+
+
 # Image decoding/contour extraction and GEOS nesting are CPU-bound.  Letting a
 # large upload create dozens of workers or two layouts consume every core makes
 # the desktop unresponsive even though each individual operation is valid.
@@ -123,10 +250,14 @@ app = FastAPI(
 # see README.md and run_server.py's own "Images stay on this device" banner).
 # allow_origins=["*"] previously meant ANY website open in ANY browser tab on
 # this machine could script a cross-origin fetch() to this server -- list job
-# data, upload attacker-chosen images into an existing job, or trigger an
-# export that writes files via processed_images_path -- entirely without the
-# user's knowledge, since a wildcard CORS policy lets the browser both send
-# the request AND read the response regardless of which page initiated it.
+# data or upload attacker-chosen images into an existing job -- entirely
+# without the user's knowledge, since a wildcard CORS policy lets the browser
+# both send the request AND read the response regardless of which page
+# initiated it. (The confirm/export endpoint no longer accepts a caller-
+# supplied filesystem path at all -- exported images now always go to the
+# fixed images/<job_id>/ folder next to the app -- so that specific attack
+# surface no longer applies, but the general cross-origin risk above still
+# does.)
 # The frontend only ever talks to a fixed local origin (localhost/127.0.0.1,
 # any port -- see web/src/lib/nestingApi.ts's own "browser -> loopback ->
 # Python" comment and its LOCAL_BACKEND_URL default), so restricting to that
@@ -360,9 +491,6 @@ def _upgrade_legacy_alpha_rejections(state) -> bool:
     state.output_dpi = None
     state.output_layer_count = 0
     state.background_color = None
-    state.processed_images_path = None
-    state.processed_images_directory = None
-    state.moved_processed_images_count = 0
     state.qa_violations = []
     state.cached_collision_signature = None
     state.cached_collision_is_valid = None
@@ -600,6 +728,7 @@ def _stored_compute_response(state):
 @app.post("/jobs", response_model=CreateJobResponse)
 async def create_nesting_job() -> CreateJobResponse:
     state = create_job()
+    ensure_images_job_dir(state.job_id)
     return _job_status_payload(state)
 
 
@@ -715,6 +844,7 @@ async def upload_images(
     if job_id is None:
         state = create_job()
         job_id = state.job_id
+        ensure_images_job_dir(job_id)
     else:
         try:
             state = load_job_state(job_id)
@@ -826,6 +956,7 @@ async def upload_images(
             # so items committed before the crash are still recovered exactly
             # like before.
             append_pending_part(state.job_id, stored_part)
+            copy_uploaded_image_into_images_dir(state.job_id, stored_part)
             new_count += 1
             results[index] = UploadedPartResult(
                 part_id=part_id,
@@ -905,9 +1036,6 @@ async def delete_job_part(job_id: str, client_part_id: str) -> dict[str, object]
         state.output_dpi = None
         state.output_layer_count = 0
         state.background_color = None
-        state.processed_images_path = None
-        state.processed_images_directory = None
-        state.moved_processed_images_count = 0
         state.qa_violations = []
         # Found during full-project review: this reset previously missed the
         # four cached_collision_* fields that _upgrade_legacy_alpha_rejections
@@ -944,10 +1072,33 @@ async def delete_nesting_job(job_id: str) -> dict[str, object]:
     lock = await _get_job_lock(job_id)
     async with lock:
         _cancelled_jobs.add(job_id)
-        job_dir = DEFAULT_JOBS_ROOT / job_id
-        # validate through load_job_state above; this path is therefore safe.
+        job_dir = job_storage.DEFAULT_JOBS_ROOT / job_id
+        # Read through the job_storage module (not the DEFAULT_JOBS_ROOT name
+        # imported at the top of this file) specifically so this resolves
+        # dynamically at request time. The imported name above is bound once,
+        # at import time, to whatever job_storage.DEFAULT_JOBS_ROOT was at
+        # that moment -- tests that monkeypatch job_storage.DEFAULT_JOBS_ROOT
+        # for isolation (as this project's own test suite already does for
+        # create_job/load_job_state/save_job_state, which all read it the
+        # same dynamic way from inside job_storage.py itself) would otherwise
+        # patch a value this line never sees, silently deleting from the
+        # real, unpatched jobs/ folder instead of the test's tmp_path one.
         import shutil
         shutil.rmtree(job_dir, ignore_errors=True)
+        # BUG FIX: this previously deleted only jobs/<job_id>/ (the internal
+        # working copy under DEFAULT_JOBS_ROOT -- uploads/, job_state.json,
+        # output.tiff), while leaving images/<job_id>/{uploaded,remaining,final}/
+        # under DEFAULT_IMAGES_ROOT completely untouched. That second tree is
+        # populated on every upload (copy_uploaded_image_into_images_dir) and on
+        # every export (sync_images_final_and_remaining) specifically so the
+        # client can see their own images next to the app -- so "مسح الكل"/
+        # clearAllParts() looked like it succeeded (the job vanished from the
+        # UI) while every image the user just asked to delete kept sitting on
+        # disk in this second, client-visible folder. job_id is already
+        # validated above (load_job_state -> _job_dir -> validate_job_id), and
+        # _images_job_dir() re-validates it again internally, so this is safe
+        # to call with the same job_id and no extra checks needed.
+        shutil.rmtree(images_job_dir(job_id), ignore_errors=True)
         _finish_progress(job_id, "تم حذف عملية الترتيب.")
     # _job_lock_guard (not the per-job `lock` just released above) is the
     # correct mutex here: it is the SAME guard _get_job_lock() itself uses to
@@ -1081,28 +1232,37 @@ async def compute_layout(job_id: str, req: ComputeRequest) -> ComputeResponse:
                     # الـ backfill sweep دايماً بيستخدم مسار الـ exact NFP بغض النظر
                     # عن مسار الـ main pass، فأول قطعة فيه ممكن تدفع ثمن unary_union
                     # كامل على مئات الـ zones المشغولة، لـ 24 زاوية دوران محتملة —
-                    # بدون سقف زمني، ده كان بيظهر كأن العملية توقفت تماماً. 45 ثانية
-                    # كافية عملياً لمحاولة حقيقية، وبنفس رتبة lns_time_budget بالأسفل.
-                    backfill_time_budget_seconds=60.0,
+                    # بدون سقف زمني، ده كان بيظهر كأن العملية توقفت تماماً. القيمة
+                    # قابلة للتحكم عبر NESTING_BACKFILL_TIME_BUDGET_SECONDS (افتراضياً
+                    # 60 ثانية، بنفس رتبة lns_time_budget بالأسفل).
+                    backfill_time_budget_seconds=BACKFILL_TIME_BUDGET_SECONDS,
                 )
 
                 # ---- LNS Optimization Stage ----
-                # عدد الـ iterations والـ time budget يتناسبوا مع عدد الصور.
-                # مع 150+ صورة، iteration واحدة بتاخد دقائق بسبب NFP.
-                # لذلك نستخدم عدد أقل من الـ iterations وtime budget أقصر.
+                # عدد الـ iterations والـ time budget يتناسبوا مع عدد الصور، عبر
+                # _lns_pipeline_settings (القيم نفسها قابلة للتحكم بمتغيرات بيئة
+                # NESTING_LNS_* -- راجع تعريفها أعلى الملف). مع 150+ صورة، iteration
+                # واحدة بتاخد دقائق بسبب NFP، فالفئة الكبيرة (>=100 قطعة موضوعة)
+                # بتستخدم ميزانية زمنية أطول بدل تكرارات أقل، عشان تفضل قادرة تدور
+                # على فراغات إضافية بدل ما توقف عند أول نتيجة مقبولة.
                 placed_count = len(result.placed)
+                lns_max_iterations, lns_time_budget, lns_destroy_fraction = _lns_pipeline_settings(placed_count)
+                # تعديل اختياري لكل طلب على قيمة الـ iterations/destroy_fraction لـ
+                # LARGE tier فقط (>=100 قطعة موضوعة)، جاي من صفحة الإعدادات في
+                # الفرونت. ComputeRequest's Pydantic Field(ge=1, le=60) و
+                # Field(gt=0, le=0.40) في schemas.py يضمنوا أصلاً إن القيمة داخل
+                # الحدود الموثقة قبل ما توصل للسطر ده، فمفيش تكرار للتحقق
+                # من الحدود هنا. لو الطلب مابعتششي قيمة (None)، السلوك زي
+                # ما قبل التغيير ده تمامًا -- نفس القيم المحسوبة من
+                # _lns_pipeline_settings. التعديل مقصود على LARGE tier فقط (مطابق
+                # لاسمي المتغيرين lns_max_iterations_large/lns_destroy_fraction_large) --
+                # لو placed_count وقع في الـ medium أو small tier، التعديل بيبقى no-op
+                # موثّق بوضوح بدل ما يطبق على طلب مش مقصود ليه.
                 if placed_count >= 100:
-                    lns_max_iterations = 10
-                    lns_time_budget = 60.0
-                    lns_destroy_fraction = 0.10
-                elif placed_count >= 50:
-                    lns_max_iterations = 10
-                    lns_time_budget = 60.0
-                    lns_destroy_fraction = 0.15
-                else:
-                    lns_max_iterations = 10
-                    lns_time_budget = 60.0
-                    lns_destroy_fraction = 0.20
+                    if req.lns_max_iterations_large is not None:
+                        lns_max_iterations = req.lns_max_iterations_large
+                    if req.lns_destroy_fraction_large is not None:
+                        lns_destroy_fraction = req.lns_destroy_fraction_large
 
                 if result.placed:
                     def _lns_iteration_progress(entry) -> None:
@@ -1173,6 +1333,10 @@ async def compute_layout(job_id: str, req: ComputeRequest) -> ComputeResponse:
                         sheet_height_mm=req.sheet_height_mm,
                         sheet_margin_mm=req.sheet_margin_mm,
                         clearance_mm=req.clearance_mm,
+                        # سابقاً كانت تأخذ القيمة الافتراضية الصامتة (3) من
+                        # compaction.py بلا أي إمكانية للتحكم. الآن قابلة للضبط
+                        # عبر NESTING_COMPACTION_MAX_PASSES.
+                        max_passes=COMPACTION_MAX_PASSES,
                         check_cancelled=cancelled,
                     )
                     if compaction_result.improved:
@@ -1188,15 +1352,13 @@ async def compute_layout(job_id: str, req: ComputeRequest) -> ComputeResponse:
                 # (larger jobs -> shorter budget, fewer rounds), since this stage's
                 # own repair cost is the same per-part NFP cost LNS pays.
                 if result.placed:
-                    if placed_count >= 100:
-                        local_reopt_max_rounds = 3
-                        local_reopt_time_budget = 30.0
-                    elif placed_count >= 50:
-                        local_reopt_max_rounds = 4
-                        local_reopt_time_budget = 30.0
-                    else:
-                        local_reopt_max_rounds = 5
-                        local_reopt_time_budget = 30.0
+                    # عبر _local_reopt_pipeline_settings (قيم قابلة للتحكم عبر متغيرات
+                    # بيئة NESTING_LOCAL_REOPT_* -- راجع تعريفها أعلى الملف). نفس
+                    # مبدأ التدرج السابق (أكبر إزاحة فرصة أكثر للاستغلال)، لكن
+                    # الفئة >=100 لم تعد الأضعف بين الثلاثة بلا داعٍ، لأن جولة الإعادة
+                    # تعزل قطعة واحدة حول أسوأ جيب متبقي، وهذا الفحص مفيد بالذات في الفئة
+                    # الأكبر، مش أقل فرصة.
+                    local_reopt_max_rounds, local_reopt_time_budget = _local_reopt_pipeline_settings(placed_count)
 
                     def _local_reopt_round_progress(entry) -> None:
                         """Report each local re-optimization round to the UI."""
@@ -1325,9 +1487,6 @@ async def compute_layout(job_id: str, req: ComputeRequest) -> ComputeResponse:
         state.output_dpi = None
         state.output_layer_count = 0
         state.background_color = None
-        state.processed_images_path = None
-        state.processed_images_directory = None
-        state.moved_processed_images_count = 0
         state.qa_violations = []
         state.cached_collision_signature = _collision_signature(state)
         state.cached_collision_is_valid = collision_is_valid
@@ -1491,8 +1650,6 @@ async def confirm_and_export(job_id: str, req: ConfirmRequest) -> ConfirmRespons
             dpi=float(state.output_dpi or state.dpi or 0),
             page_count=len(sheets_from_state(state)) or 1,
             layer_count=int(state.output_layer_count or 0),
-            processed_images_directory=state.processed_images_directory,
-            moved_processed_images_count=int(state.moved_processed_images_count or 0),
         )
 
     # Every mutating step below -- collision re-check, TIFF export, QA check,
@@ -1530,8 +1687,6 @@ async def confirm_and_export(job_id: str, req: ConfirmRequest) -> ConfirmRespons
                 dpi=float(state.output_dpi or state.dpi or 0),
                 page_count=len(sheets_from_state(state)) or 1,
                 layer_count=int(state.output_layer_count or 0),
-                processed_images_directory=state.processed_images_directory,
-                moved_processed_images_count=int(state.moved_processed_images_count or 0),
             )
         if state.stage != "computed":
             raise HTTPException(status_code=400, detail="لازم تعمل compute قبل confirm.")
@@ -1615,28 +1770,13 @@ async def confirm_and_export(job_id: str, req: ConfirmRequest) -> ConfirmRespons
             _finish_progress(job_id, "توقف التصدير بسبب خطأ.")
             raise HTTPException(status_code=500, detail=f"فشل التصدير أو الـQA: {exc}") from exc
 
-        processed_result = None
-        if qa_report.is_valid:
-            placed_part_ids = {
-                part.part_id for placed_parts in placed_sheets for part in placed_parts
-            }
-            try:
-                processed_result = await run_in_threadpool(
-                    move_processed_originals,
-                    state.parts,
-                    placed_part_ids,
-                    req.processed_images_path,
-                    folder_name=req.folder_name,
-                )
-            except ProcessedImagesError as exc:
-                logger.exception("processed originals move failed job=%s", job_id)
-                _finish_progress(job_id, "تم إنشاء ملف TIFF لكن توقف نقل الصور الأصلية.")
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"تم إنشاء TIFF لكن لم يتم نقل الصور الأصلية: {exc}",
-                ) from exc
-
         _finish_progress(job_id, "اكتمل التصدير والتحقق النهائي.")
+        sync_images_final_and_remaining(
+            job_id,
+            state.parts,
+            set(state.unplaced_part_ids),
+            tiff_result.file_path,
+        )
         state.stage = "confirmed"
         state.output_tiff_path = tiff_result.file_path
         state.output_export_accepted = qa_report.is_valid
@@ -1645,13 +1785,6 @@ async def confirm_and_export(job_id: str, req: ConfirmRequest) -> ConfirmRespons
         state.output_dpi = tiff_result.dpi_x
         state.output_layer_count = tiff_result.layer_count
         state.background_color = req.background_color
-        state.processed_images_path = req.processed_images_path
-        state.processed_images_directory = (
-            processed_result.directory if processed_result is not None else None
-        )
-        state.moved_processed_images_count = (
-            processed_result.moved_count if processed_result is not None else 0
-        )
         state.qa_violations = [
             {"severity": v.severity, "detail": v.detail, "expected": v.expected, "actual": v.actual}
             for v in qa_report.violations
@@ -1675,9 +1808,8 @@ async def confirm_and_export(job_id: str, req: ConfirmRequest) -> ConfirmRespons
             dpi=tiff_result.dpi_x,
             page_count=tiff_result.page_count,
             layer_count=tiff_result.layer_count,
-            processed_images_directory=state.processed_images_directory,
-            moved_processed_images_count=state.moved_processed_images_count,
         )
+
 
 @app.get("/download/{job_id}")
 async def download_tiff(job_id: str) -> FileResponse:

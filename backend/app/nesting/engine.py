@@ -1280,7 +1280,26 @@ def _backfill_gaps(
                 next_round.extend(ordered[idx:])
                 timed_out = True
                 break
-            if on_progress and idx % 5 == 0:
+            # Reported before EVERY part (not every 5th, as this previously
+            # was) specifically because the first part of a backfill sweep
+            # can pay the full unary_union warm-up cost across every occupied
+            # zone for up to 24 rotations -- see run_best_single_sheet_nesting's
+            # docstring above and main.py's backfill_time_budget_seconds
+            # comment for the full story. That single call is already bounded
+            # by `deadline` (checked once per rotation in _place_one_part, so
+            # it can never itself run past the budget by more than one
+            # rotation's cost) and the SSE heartbeat in main.py's
+            # stream_layout_progress is timer-driven independently of whether
+            # this callback ever fires, so the connection was never actually
+            # at risk here -- but with the old `idx % 5` gate, the UI could go
+            # up to 4 parts' worth of real (if slow) work without a single
+            # fresh progress line, which reads as "stuck" to whoever is
+            # watching even though nothing is wrong. Reporting every part
+            # costs one extra callback per part; on_attempt_progress's own
+            # _PROGRESS_EMIT_MIN_INTERVAL_SECONDS throttle in main.py already
+            # caps how often that turns into an actual SSE event, so this adds
+            # no meaningful overhead.
+            if on_progress:
                 on_progress(idx, len(ordered), len(placed))
             result = _place_one_part(
                 prepared_rotations[part_id],

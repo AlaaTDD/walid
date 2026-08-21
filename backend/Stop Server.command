@@ -1,7 +1,7 @@
 #!/bin/bash
-# Double-click this file to stop the server (and its ngrok tunnel), however
-# many copies of it are running. Works no matter where this folder is
-# located on the Mac (Desktop, external drive, anywhere).
+# Double-click this file to stop the server, however many copies of it are
+# running. Works no matter where this folder is located on the Mac (Desktop,
+# external drive, anywhere).
 
 # Move into this script's own folder first, so stop_server.py is found
 # regardless of where the .command file itself was double-clicked from.

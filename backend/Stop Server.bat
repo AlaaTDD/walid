@@ -1,7 +1,7 @@
 @echo off
-REM Double-click this file to stop the server (and its ngrok tunnel),
-REM however many copies of it are running. Works no matter where this
-REM folder is located on the PC (Desktop, D: drive, anywhere).
+REM Double-click this file to stop the server, however many copies of it
+REM are running. Works no matter where this folder is located on the PC
+REM (Desktop, D: drive, anywhere).
 
 REM Move into this script's own folder first, so stop_server.py is found
 REM regardless of where this .bat file itself was double-clicked from.

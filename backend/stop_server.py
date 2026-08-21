@@ -1,14 +1,11 @@
-"""Stops the nesting backend (and its ngrok tunnel) cleanly.
+"""Stops the nesting backend cleanly.
 
 Run this whenever you're not sure if a server is still running, or if
 starting a new one fails with "address already in use". It finds every
 process currently listening on the backend's port (there can be more than
 one if a previous run wasn't closed properly -- for example the window was
 force-closed, or the machine slept mid-session), asks each one to shut down
-politely, and force-kills any that don't respond in time. It then does the
-same for any lingering ``ngrok`` process, since a leftover tunnel process
-can itself hold onto its own local inspection port (4040) even after the
-server behind it is gone.
+politely, and force-kills any that don't respond in time.
 
 This is the companion tool to ``run_server.py``: that one starts the server,
 this one guarantees it (and only it) is stopped, no matter how many times it
@@ -91,45 +88,6 @@ def _find_pids_on_port(port: int) -> list[int]:
         if line.isdigit():
             pids.append(int(line))
     return pids
-
-
-def _find_ngrok_pids() -> list[int]:
-    """Returns every PID for a running ``ngrok`` process, regardless of which
-    port it's tunnelling to. A leftover ngrok process (from a backend that
-    was killed without going through its own clean shutdown path) keeps
-    running on its own, still holding its local inspection API port open,
-    and confuses the next run into thinking a tunnel already exists.
-    """
-    if IS_WINDOWS:
-        try:
-            output = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq ngrok.exe", "/FO", "CSV", "/NH"],
-                capture_output=True,
-                text=True,
-                check=False,
-            ).stdout
-        except OSError:
-            return []
-        pids: list[int] = []
-        for line in output.splitlines():
-            fields = [f.strip('"') for f in line.strip().split('","')]
-            if len(fields) >= 2:
-                try:
-                    pids.append(int(fields[1]))
-                except ValueError:
-                    continue
-        return pids
-
-    try:
-        output = subprocess.run(
-            ["pgrep", "-x", "ngrok"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout
-    except OSError:
-        return []
-    return [int(line) for line in output.splitlines() if line.strip().isdigit()]
 
 
 def _is_alive(pid: int) -> bool:
@@ -240,18 +198,13 @@ def _stop_pids(pids: list[int], label: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Stop the nesting backend server and its ngrok tunnel, however many copies are running."
+        description="Stop the nesting backend server, however many copies are running."
     )
     parser.add_argument(
         "--port",
         type=int,
         default=8000,
         help="Local port the server was started on (default: 8000, matches run_server.py's default)",
-    )
-    parser.add_argument(
-        "--skip-ngrok",
-        action="store_true",
-        help="Only stop the server process(es); leave any ngrok tunnel process running",
     )
     args = parser.parse_args()
 
@@ -261,10 +214,6 @@ def main() -> None:
 
     server_pids = _find_pids_on_port(args.port)
     _stop_pids(server_pids, f"server (port {args.port})")
-
-    if not args.skip_ngrok:
-        ngrok_pids = _find_ngrok_pids()
-        _stop_pids(ngrok_pids, "ngrok")
 
     print("=" * 60)
     print("  Done. It's now safe to start the server again.")

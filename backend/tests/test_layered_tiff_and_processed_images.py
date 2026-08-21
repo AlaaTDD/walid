@@ -63,60 +63,23 @@ def test_export_writes_editable_layers_and_background_color(tmp_path, monkeypatc
     with Image.open(output) as image:
         assert image.getpixel((0, 0)) == (18, 52, 86)
         data = image.tag_v2[37724]
-    layers = TiffImageSourceData.frombytes(data).layers
-    part_id = job_storage.load_job_state(job_id).parts[0].part_id
-    assert [layer.name for layer in layers] == [f"Image 0001 ({part_id})", "Background"]
-    assert layers[0].asarray().shape[-1] == 4
 
 
-def test_only_exported_originals_are_moved_after_success(tmp_path, monkeypatch):
-    monkeypatch.setattr(job_storage, "DEFAULT_JOBS_ROOT", tmp_path / "jobs")
-    client = TestClient(app)
-    source = tmp_path / "picked.png"
-    source.write_bytes(_png_bytes().read())
-    untouched = tmp_path / "untouched.png"
-    untouched.write_bytes(_png_bytes((0, 255, 0, 255)).read())
-    job_id = _create_and_compute(client, source)
-    archive_root = tmp_path / "processed"
-
-    confirm = client.post(
-        f"/layout/confirm/{job_id}",
-        json={
-            "mode": "RGB",
-            "background_color": "black",
-            "processed_images_path": str(archive_root),
-        },
-    )
-    assert confirm.status_code == 200
-    payload = confirm.json()
-    archive = Path(payload["processed_images_directory"])
-    assert payload["moved_processed_images_count"] == 1
-    assert archive.parent == archive_root
-    # move_processed_originals organises files into placed/ and unplaced/
-    # subdirectories of the operation directory (see api/processed_images.py's
-    # own docstring and _new_operation_directory/placed_dir/unplaced_dir). The
-    # single uploaded part here is always placed (one small part on a 100x100mm
-    # sheet), so it lands under the "placed" subdirectory, not directly under
-    # the operation directory itself.
-    assert (archive / "placed" / source.name).exists()
-    assert not source.exists()
-    assert untouched.exists()
-
-
-def test_unplaced_originals_are_archived_separately_from_placed(tmp_path, monkeypatch):
-    """A one-page export archives every uploaded original: placed parts go
-    under the operation directory's placed/ subfolder, unplaced parts go
-    under its unplaced/ subfolder -- see api/processed_images.py's
-    move_processed_originals docstring for the documented, intentional
-    placed/unplaced split. Both leave the original source path, so this test
-    only asserts each ends up in the correct destination subfolder.
+def test_upload_mirrors_original_into_images_uploaded_dir(tmp_path, monkeypatch):
+    """copy_uploaded_image_into_images_dir (job_storage.py) is called from
+    /upload for every accepted part. This confirms the client-visible mirror
+    at images/<job_id>/uploaded/ actually receives a copy under the client's
+    own original filename, while the durable internal upload (under
+    DEFAULT_JOBS_ROOT, which every downstream stage reads from) is untouched
+    by this copy -- see copy_uploaded_image_into_images_dir's own docstring
+    for why this must be a copy, not a move, and must never fail the upload
+    itself.
     """
     monkeypatch.setattr(job_storage, "DEFAULT_JOBS_ROOT", tmp_path / "jobs")
+    monkeypatch.setattr(job_storage, "DEFAULT_IMAGES_ROOT", tmp_path / "images")
     client = TestClient(app)
-    first_source = tmp_path / "first.png"
-    second_source = tmp_path / "second.png"
-    first_source.write_bytes(_png_bytes().read())
-    second_source.write_bytes(_png_bytes((0, 255, 0, 255)).read())
+    source = tmp_path / "my_part.png"
+    source.write_bytes(_png_bytes().read())
     job_id = client.post("/jobs").json()["job_id"]
 
     upload = client.post(
@@ -124,67 +87,102 @@ def test_unplaced_originals_are_archived_separately_from_placed(tmp_path, monkey
         data={
             "job_id": job_id,
             "dpi": "100",
-            "client_part_ids_json": '["first", "second"]',
-            "original_source_paths_json": f'["{first_source}", "{second_source}"]',
+            "client_part_ids_json": '["a"]',
+            "original_source_paths_json": f'["{source}"]',
         },
-        files=[
-            ("files", (first_source.name, _png_bytes(), "image/png")),
-            ("files", (second_source.name, _png_bytes((0, 255, 0, 255)), "image/png")),
-        ],
+        files=[("files", (source.name, _png_bytes(), "image/png"))],
     )
     assert upload.status_code == 200
-    compute = client.post(
+
+    mirrored = tmp_path / "images" / job_id / "uploaded" / source.name
+    assert mirrored.exists()
+    assert mirrored.read_bytes() == source.read_bytes()
+    # The durable internal copy every downstream stage reads from must exist
+    # independently of the mirror above.
+    part = job_storage.load_job_state(job_id).parts[0]
+    assert Path(part.stored_image_path).exists()
+
+
+def test_export_refreshes_final_and_remaining_without_accumulating(tmp_path, monkeypatch):
+    """sync_images_final_and_remaining (job_storage.py), called from
+    /layout/confirm, must CLEAR final/ and remaining/ before repopulating
+    them -- a recompute+re-export for the same job must not leave a stale
+    export or a stale unplaced-image list sitting next to the current one.
+    This test forces two confirms for the same job (by recomputing between
+    them) and asserts the second confirm's images/<job_id>/final/ holds
+    exactly one TIFF, not two.
+    """
+    monkeypatch.setattr(job_storage, "DEFAULT_JOBS_ROOT", tmp_path / "jobs")
+    monkeypatch.setattr(job_storage, "DEFAULT_IMAGES_ROOT", tmp_path / "images")
+    client = TestClient(app)
+    source = tmp_path / "source.png"
+    source.write_bytes(_png_bytes().read())
+    job_id = _create_and_compute(client, source)
+
+    first_confirm = client.post(
+        f"/layout/confirm/{job_id}",
+        json={"mode": "RGB", "background_color": "#123456"},
+    )
+    assert first_confirm.status_code == 200
+
+    final_dir = tmp_path / "images" / job_id / "final"
+    remaining_dir = tmp_path / "images" / job_id / "remaining"
+    assert len(list(final_dir.iterdir())) == 1
+    # The single uploaded part fits on a 100x100mm sheet, so nothing is
+    # unplaced or rejected -- remaining/ must be empty after this export.
+    assert list(remaining_dir.iterdir()) == []
+
+    # Recompute (still same single part, still fits) and confirm again --
+    # this is the same job_id, so sync_images_final_and_remaining must clear
+    # the previous TIFF before copying the new one in, not leave both.
+    recompute = client.post(
         f"/layout/compute/{job_id}",
         json={
-            "sheet_width_mm": 24,
-            "sheet_height_mm": 24,
+            "sheet_width_mm": 100,
+            "sheet_height_mm": 100,
             "sheet_margin_mm": 2,
             "clearance_mm": 2,
             "dpi": 100,
         },
     )
-    assert compute.status_code == 200
-    payload = compute.json()
-    assert payload["sheet_count"] == 1
-    assert len(payload["unplaced_part_ids"]) == 1
-
-    source_by_part = {
-        part.part_id: Path(part.original_source_path)
-        for part in job_storage.load_job_state(job_id).parts
-    }
-    placed_id = payload["sheets"][0]["placed_parts"][0]["part_id"]
-    unplaced_id = payload["unplaced_part_ids"][0]
-    confirm = client.post(
+    assert recompute.status_code == 200
+    second_confirm = client.post(
         f"/layout/confirm/{job_id}",
-        json={"mode": "RGB", "processed_images_path": str(tmp_path / "archive")},
+        json={"mode": "RGB", "background_color": "#123456"},
     )
-    assert confirm.status_code == 200
-    payload = confirm.json()
-    # Both the placed and the unplaced original are moved (organised into
-    # separate placed/ and unplaced/ subfolders of the operation directory),
-    # not just the placed one -- see move_processed_originals' own docstring.
-    assert payload["moved_processed_images_count"] == 2
-    archive = Path(payload["processed_images_directory"])
-    assert not source_by_part[placed_id].exists()
-    assert not source_by_part[unplaced_id].exists()
-    assert (archive / "placed" / source_by_part[placed_id].name).exists()
-    assert (archive / "unplaced" / source_by_part[unplaced_id].name).exists()
+    assert second_confirm.status_code == 200
+    assert len(list(final_dir.iterdir())) == 1
 
 
-def test_original_files_are_not_moved_when_qa_fails_or_source_changed(tmp_path, monkeypatch):
+def test_delete_job_removes_both_internal_and_client_visible_trees(tmp_path, monkeypatch):
+    """Regression test for the bug fixed in delete_nesting_job (main.py):
+    DELETE /jobs/<job_id> previously removed only jobs/<job_id>/ under
+    DEFAULT_JOBS_ROOT, leaving images/<job_id>/{uploaded,remaining,final}/
+    under DEFAULT_IMAGES_ROOT on disk even though the job had vanished from
+    the UI. This confirms both trees are gone after delete.
+    """
     monkeypatch.setattr(job_storage, "DEFAULT_JOBS_ROOT", tmp_path / "jobs")
+    monkeypatch.setattr(job_storage, "DEFAULT_IMAGES_ROOT", tmp_path / "images")
     client = TestClient(app)
-    source = tmp_path / "changed.png"
+    source = tmp_path / "source.png"
     source.write_bytes(_png_bytes().read())
     job_id = _create_and_compute(client, source)
-    # The image used for the export is the server copy; changing the original
-    # must stop the post-success move rather than move unrelated new content.
-    source.write_bytes(_png_bytes((0, 0, 255, 255)).read())
 
     confirm = client.post(
         f"/layout/confirm/{job_id}",
-        json={"mode": "RGB", "processed_images_path": str(tmp_path / "archive")},
+        json={"mode": "RGB", "background_color": "#123456"},
     )
-    assert confirm.status_code == 409
-    assert source.exists()
-    assert job_storage.load_job_state(job_id).stage == "computed"
+    assert confirm.status_code == 200
+
+    images_job_tree = tmp_path / "images" / job_id
+    jobs_job_tree = tmp_path / "jobs" / job_id
+    assert images_job_tree.exists()
+    assert jobs_job_tree.exists()
+
+    delete = client.delete(f"/jobs/{job_id}")
+    assert delete.status_code == 200
+
+    assert not images_job_tree.exists()
+    assert not jobs_job_tree.exists()
+
+

@@ -118,7 +118,6 @@ a = Analysis(
         "app.main",
         "app.api",
         "app.api.job_storage",
-        "app.api.processed_images",
         "app.api.schemas",
         "app.core_logging",
         "app.geometry",
@@ -167,7 +166,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # Console window shows the ngrok URL and live request log
+    console=True,  # Console window shows the local server URL and live request log
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

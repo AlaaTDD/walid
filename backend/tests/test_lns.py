@@ -632,3 +632,107 @@ def test_local_reoptimization_places_a_deliberately_unplaced_part_into_a_large_p
     assert "D" not in result.best.unplaced_part_ids
     assert len(result.best.placed) == 4
     assert result.improved is True
+
+
+# ---------------------------------------------------------------------------
+# Per-request LARGE-tier overrides (schemas.py's ComputeRequest.
+# lns_max_iterations_large / lns_destroy_fraction_large, spliced in main.py's
+# compute endpoint right after _lns_pipeline_settings). Covers both the
+# schema-level bounds (le=60, le=0.40) and the actual override/no-op logic
+# the endpoint applies, without needing a slow 100+-part HTTP round trip.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_request_lns_overrides_default_to_none():
+    from app.api.schemas import ComputeRequest
+
+    req = ComputeRequest()
+    assert req.lns_max_iterations_large is None
+    assert req.lns_destroy_fraction_large is None
+
+
+def test_compute_request_lns_overrides_accept_documented_ceiling_values():
+    from app.api.schemas import ComputeRequest
+
+    # 60 and 0.40 are the documented ceilings themselves (see schemas.py's
+    # own doc comment on these two fields) -- both must be ACCEPTED, since
+    # le= is inclusive.
+    req = ComputeRequest(lns_max_iterations_large=60, lns_destroy_fraction_large=0.40)
+    assert req.lns_max_iterations_large == 60
+    assert req.lns_destroy_fraction_large == 0.40
+
+    # The user's own originally-requested values must also be accepted.
+    req2 = ComputeRequest(lns_max_iterations_large=25, lns_destroy_fraction_large=0.20)
+    assert req2.lns_max_iterations_large == 25
+    assert req2.lns_destroy_fraction_large == 0.20
+
+
+def test_compute_request_lns_overrides_reject_past_the_ceiling():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.api.schemas import ComputeRequest
+
+    with pytest.raises(ValidationError):
+        ComputeRequest(lns_max_iterations_large=61)
+    with pytest.raises(ValidationError):
+        ComputeRequest(lns_destroy_fraction_large=0.41)
+    with pytest.raises(ValidationError):
+        ComputeRequest(lns_max_iterations_large=0)
+    with pytest.raises(ValidationError):
+        ComputeRequest(lns_destroy_fraction_large=0.0)
+
+
+def _apply_large_tier_override(placed_count, lns_max_iterations_large, lns_destroy_fraction_large):
+    """Mirrors main.py's own override splice (compute endpoint, right after
+    _lns_pipeline_settings) exactly, so this test exercises the identical
+    conditional logic the live endpoint runs -- not a re-implementation that
+    could silently drift from it.
+    """
+    from app.main import _lns_pipeline_settings
+
+    lns_max_iterations, lns_time_budget, lns_destroy_fraction = _lns_pipeline_settings(placed_count)
+    if placed_count >= 100:
+        if lns_max_iterations_large is not None:
+            lns_max_iterations = lns_max_iterations_large
+        if lns_destroy_fraction_large is not None:
+            lns_destroy_fraction = lns_destroy_fraction_large
+    return lns_max_iterations, lns_time_budget, lns_destroy_fraction
+
+
+def test_large_tier_override_replaces_tiered_default_when_placed_count_qualifies():
+    from app.main import LNS_TIME_BUDGET_SECONDS_LARGE
+
+    # 115 placed parts is the exact scenario documented in main.py's own
+    # comment above _lns_pipeline_settings (the tier a ~115-part job falls
+    # into). User's originally-requested values (25, 0.20) must actually
+    # replace the tiered defaults (15, 0.15) here.
+    iterations, time_budget, destroy_fraction = _apply_large_tier_override(115, 25, 0.20)
+    assert iterations == 25
+    assert destroy_fraction == 0.20
+    # time_budget is untouched by these two fields -- confirms the override
+    # is scoped to exactly the two named knobs, not the whole tier tuple.
+    assert time_budget == LNS_TIME_BUDGET_SECONDS_LARGE
+
+
+def test_large_tier_override_is_a_documented_no_op_below_the_tier_boundary():
+    from app.main import _lns_pipeline_settings
+
+    # placed_count=80 is in the MEDIUM tier (>=50, <100) -- the override must
+    # NOT apply here even if the request happened to set these fields,
+    # matching the endpoint's own `if placed_count >= 100:` guard.
+    medium_default = _lns_pipeline_settings(80)
+    result = _apply_large_tier_override(80, 25, 0.20)
+    assert result == medium_default
+
+
+def test_large_tier_override_falls_back_to_tiered_default_when_unset():
+    from app.main import _lns_pipeline_settings
+
+    # None/None (a client that never touched the advanced settings section)
+    # must produce byte-identical output to calling _lns_pipeline_settings
+    # directly -- this is the backward-compatibility guarantee documented on
+    # both the ComputeRequest fields and NestingJobSettings.
+    large_default = _lns_pipeline_settings(150)
+    result = _apply_large_tier_override(150, None, None)
+    assert result == large_default

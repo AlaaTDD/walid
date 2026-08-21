@@ -25,7 +25,6 @@ class UploadResponse(BaseModel):
     resume_message: str | None = None
 
 
-
 class CreateJobResponse(BaseModel):
     job_id: str
     stage: str
@@ -58,6 +57,24 @@ class ComputeRequest(BaseModel):
     # محاولة واحدة فقط: الـ LNS optimizer يتولى التحسين العالمي بدلاً من
     # تكرار محاولات greedy متعددة. راجع _PACKING_STRATEGIES في engine.py.
     packing_attempts: int = Field(default=1, ge=1, le=1)
+    # اختياريان: تعديل لكل طلب على قيم الـ LARGE tier في main.py's
+    # _lns_pipeline_settings (>=100 قطعة موضوعة)، بدل الاعتماد فقط على
+    # متغيرات البيئة NESTING_LNS_MAX_ITERATIONS_LARGE /
+    # NESTING_LNS_DESTROY_FRACTION_LARGE اللي بتتطلب إعادة تشغيل السيرفر.
+    # None (الافتراضي) يعني "استخدم القيمة المحسوبة من الـ tier زي ما هي" --
+    # فأي job من عميل قديم ما بيبعتش الحقلين دول سلوكه هيفضل زي قبل التغيير
+    # ده تمامًا. الحدود العليا هنا مش اعتباطية:
+    # - le=60 لـ iterations: نفس الـ default الموثق في lns.py's
+    #   run_lns_optimization (max_iterations: int = 60) ونفس السقف اللي
+    #   test_nesting_capacity.py بيشغّله فعليًا (max_iterations=60)، يعني ده
+    #   سقف مُختبر ومُثبت إنه آمن، مش رقم متخيَّل.
+    # - le=0.40 لـ destroy_fraction: أعلى قيمة موثقة ومُختبرة فعليًا في هذا
+    #   الكود بالذات (test_lns.py: max_iterations=80, destroy_fraction=0.4).
+    #   فوق الحد ده الخوارزمية بتبقى بتهدم جزء كبير جدًا من الترتيب في كل
+    #   iteration، فبتقرب من إعادة بناء عشوائي بدل تحسين مستهدف -- ده "أكتر
+    #   من كده هيبقى مبالغ فيه" اللي المستخدم قصده بالظبط.
+    lns_max_iterations_large: int | None = Field(default=None, ge=1, le=60)
+    lns_destroy_fraction_large: float | None = Field(default=None, gt=0, le=0.40)
 
 
 class ContourPointPreview(BaseModel):
@@ -147,12 +164,6 @@ class ConfirmRequest(BaseModel):
     mode: str = Field(default="RGB", pattern="^(RGB|RGBA)$")
     # CSS/Pillow colour notation, e.g. #ffffff, #202020, white, or gray.
     background_color: str = Field(default="#FFFFFF", min_length=1, max_length=64)
-    # Optional on purpose for backward-compatible API clients.  The desktop
-    # application requires it before export; headless clients may omit it.
-    processed_images_path: str | None = Field(default=None, max_length=4096)
-    # User-chosen name for the operation folder.  The backend appends the
-    # current date/time and creates placed/unplaced subdirectories inside.
-    folder_name: str | None = Field(default=None, max_length=255)
 
 
 class QaViolationResponse(BaseModel):
@@ -172,5 +183,4 @@ class ConfirmResponse(BaseModel):
     dpi: float
     page_count: int = 1
     layer_count: int = 0
-    processed_images_directory: str | None = None
-    moved_processed_images_count: int = 0
+
